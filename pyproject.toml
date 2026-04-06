@@ -1,0 +1,25 @@
+[build-system]
+requires = [
+    "setuptools"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oj-persistence"
+version = "0.0.1"
+description = "Thread-safe persistence management with pluggable storage backends"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Speedy", email = "speedy@ownjoo.org" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "ijson",
+]
+
+[project.urls]
+Repository = "https://github.com/ownjoo-org/persistence"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
