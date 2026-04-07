@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from oj_persistence.utils.rwlock import ReadWriteLock
 
@@ -41,7 +42,7 @@ class InMemoryStore:
         with self._lock.write():
             self._data.pop(key, None)
 
-    def list(self, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         with self._lock.read():
             values = list(self._data.values())
         if predicate is None:

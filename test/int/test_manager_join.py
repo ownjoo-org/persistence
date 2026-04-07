@@ -23,7 +23,9 @@ import unittest
 
 from oj_persistence import InMemoryStore, PersistenceManager
 
-ON = lambda u, o: u['id'] == o['user_id']
+
+def ON(u, o):
+    return u['id'] == o['user_id']
 
 
 def _make_pm():
@@ -61,14 +63,14 @@ class TestInnerJoin(unittest.TestCase):
 
     def test_matched_values_are_correct(self):
         results = self.pm.join('users', 'orders', on=ON)
-        names = sorted(l['name'] for l, _ in results)
+        names = sorted(lv['name'] for lv, _ in results)
         totals = sorted(r['total'] for _, r in results)
         self.assertEqual(names, ['Alice', 'Alice', 'Bob'])
         self.assertEqual(totals, [50, 100, 200])
 
     def test_unmatched_left_excluded(self):
         results = self.pm.join('users', 'orders', on=ON)
-        names = [l['name'] for l, _ in results]
+        names = [lv['name'] for lv, _ in results]
         self.assertNotIn('Charlie', names)
 
     def test_unmatched_right_excluded(self):
@@ -92,20 +94,20 @@ class TestLeftJoin(unittest.TestCase):
 
     def test_all_left_rows_represented(self):
         results = self.pm.join('users', 'orders', on=ON, how='left')
-        left_names = [l['name'] for l, _ in results]
+        left_names = [lv['name'] for lv, _ in results]
         self.assertIn('Alice', left_names)
         self.assertIn('Bob', left_names)
         self.assertIn('Charlie', left_names)
 
     def test_unmatched_left_has_none_on_right(self):
         results = self.pm.join('users', 'orders', on=ON, how='left')
-        charlie_rows = [(l, r) for l, r in results if l['name'] == 'Charlie']
+        charlie_rows = [(lv, r) for lv, r in results if lv['name'] == 'Charlie']
         self.assertEqual(len(charlie_rows), 1)
         self.assertIsNone(charlie_rows[0][1])
 
     def test_matched_left_has_all_matching_right_rows(self):
         results = self.pm.join('users', 'orders', on=ON, how='left')
-        alice_rows = [(l, r) for l, r in results if l['name'] == 'Alice']
+        alice_rows = [(lv, r) for lv, r in results if lv['name'] == 'Alice']
         self.assertEqual(len(alice_rows), 2)
 
     def test_orphaned_right_row_excluded(self):
@@ -114,7 +116,7 @@ class TestLeftJoin(unittest.TestCase):
         self.assertNotIn('u99', right_user_ids)
 
     def test_total_result_count(self):
-        # Alice×2, Bob×1, Charlie×1(None) = 4
+        # Alice x2, Bob x1, Charlie x1 (None) = 4
         self.assertEqual(len(self.pm.join('users', 'orders', on=ON, how='left')), 4)
 
 
@@ -133,13 +135,13 @@ class TestRightJoin(unittest.TestCase):
 
     def test_unmatched_right_has_none_on_left(self):
         results = self.pm.join('users', 'orders', on=ON, how='right')
-        orphan_rows = [(l, r) for l, r in results if r['user_id'] == 'u99']
+        orphan_rows = [(lv, r) for lv, r in results if r['user_id'] == 'u99']
         self.assertEqual(len(orphan_rows), 1)
         self.assertIsNone(orphan_rows[0][0])
 
     def test_unmatched_left_row_excluded(self):
         results = self.pm.join('users', 'orders', on=ON, how='right')
-        left_names = [l['name'] for l, _ in results if l is not None]
+        left_names = [lv['name'] for lv, _ in results if lv is not None]
         self.assertNotIn('Charlie', left_names)
 
     def test_total_result_count(self):
@@ -157,18 +159,18 @@ class TestOuterJoin(unittest.TestCase):
 
     def test_all_matched_pairs_included(self):
         results = self.pm.join('users', 'orders', on=ON, how='outer')
-        matched = [(l, r) for l, r in results if l is not None and r is not None]
+        matched = [(lv, r) for lv, r in results if lv is not None and r is not None]
         self.assertEqual(len(matched), 3)
 
     def test_unmatched_left_included_with_none_right(self):
         results = self.pm.join('users', 'orders', on=ON, how='outer')
-        charlie_rows = [(l, r) for l, r in results if l is not None and l['name'] == 'Charlie']
+        charlie_rows = [(lv, r) for lv, r in results if lv is not None and lv['name'] == 'Charlie']
         self.assertEqual(len(charlie_rows), 1)
         self.assertIsNone(charlie_rows[0][1])
 
     def test_unmatched_right_included_with_none_left(self):
         results = self.pm.join('users', 'orders', on=ON, how='outer')
-        orphan_rows = [(l, r) for l, r in results if r is not None and r['user_id'] == 'u99']
+        orphan_rows = [(lv, r) for lv, r in results if r is not None and r['user_id'] == 'u99']
         self.assertEqual(len(orphan_rows), 1)
         self.assertIsNone(orphan_rows[0][0])
 
@@ -194,14 +196,14 @@ class TestWhere(unittest.TestCase):
         # Charlie has no orders; where can't touch her
         results = self.pm.join('users', 'orders', on=ON, how='left',
                                where=lambda u, o: o['total'] > 9999)
-        charlie_rows = [(l, r) for l, r in results if l['name'] == 'Charlie']
+        charlie_rows = [(lv, r) for lv, r in results if lv['name'] == 'Charlie']
         self.assertEqual(len(charlie_rows), 1)
         self.assertIsNone(charlie_rows[0][1])
 
     def test_where_does_not_affect_unmatched_right_rows(self):
         results = self.pm.join('users', 'orders', on=ON, how='right',
                                where=lambda u, o: u['name'] == 'NOBODY')
-        orphan_rows = [(l, r) for l, r in results if r['user_id'] == 'u99']
+        orphan_rows = [(lv, r) for lv, r in results if r['user_id'] == 'u99']
         self.assertEqual(len(orphan_rows), 1)
         self.assertIsNone(orphan_rows[0][0])
 
@@ -209,7 +211,7 @@ class TestWhere(unittest.TestCase):
         # Alice has matches, but where filters them all; she should not appear as (Alice, None)
         results = self.pm.join('users', 'orders', on=ON, how='left',
                                where=lambda u, o: o['total'] > 9999)
-        alice_rows = [(l, r) for l, r in results if l['name'] == 'Alice']
+        alice_rows = [(lv, r) for lv, r in results if lv['name'] == 'Alice']
         self.assertEqual(alice_rows, [])
 
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any
 
 from oj_persistence.store.base import AbstractStore
 from oj_persistence.utils.rwlock import ReadWriteLock
@@ -43,11 +44,11 @@ class CsvFileStore(AbstractStore):
     def __init__(
         self,
         path: str | Path,
-        fieldnames: Optional[list[str]] = None,
+        fieldnames: list[str] | None = None,
     ) -> None:
         self._path = Path(path)
         self._lock = ReadWriteLock()
-        self._fieldnames: Optional[list[str]] = None
+        self._fieldnames: list[str] | None = None
 
         if fieldnames is not None:
             self._fieldnames = list(fieldnames)
@@ -55,7 +56,7 @@ class CsvFileStore(AbstractStore):
             self._fieldnames = self._read_fieldnames()
 
     @property
-    def fieldnames(self) -> Optional[list[str]]:
+    def fieldnames(self) -> list[str] | None:
         return self._fieldnames
 
     # ------------------------------------------------------------------
@@ -152,7 +153,7 @@ class CsvFileStore(AbstractStore):
                         raise KeyError(key)
             self._append(key, row)
 
-    def read(self, key: str) -> Optional[dict[str, str]]:
+    def read(self, key: str) -> dict[str, str] | None:
         with self._lock.read():
             if not self._path.exists():
                 return None
@@ -182,7 +183,7 @@ class CsvFileStore(AbstractStore):
         with self._lock.write():
             self._rewrite(key, skip=True)
 
-    def list(self, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         with self._lock.read():
             if not self._path.exists():
                 return []

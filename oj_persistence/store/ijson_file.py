@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import ijson
 
@@ -125,7 +126,7 @@ class IjsonFileStore(AbstractStore):
             if self._path.exists():
                 self._rewrite(key, skip=True)
 
-    def list(self, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         with self._lock.read():
             if not self._path.exists():
                 return []

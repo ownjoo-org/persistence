@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 
 class AbstractStore(ABC):
@@ -40,5 +41,5 @@ class AbstractStore(ABC):
         """Remove the entry for key. No-op if key does not exist."""
 
     @abstractmethod
-    def list(self, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         """Return all values, or only those for which predicate(value) is True."""

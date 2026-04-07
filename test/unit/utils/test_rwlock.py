@@ -38,8 +38,10 @@ class TestConcurrentReads(unittest.TestCase):
 
         t1 = threading.Thread(target=reader)
         t2 = threading.Thread(target=reader)
-        t1.start(); t2.start()
-        t1.join(timeout=3); t2.join(timeout=3)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3)
+        t2.join(timeout=3)
 
         self.assertFalse(errors, f"Reads blocked each other: {errors}")
 
@@ -56,8 +58,10 @@ class TestConcurrentReads(unittest.TestCase):
                 errors.append(e)
 
         threads = [threading.Thread(target=reader) for _ in range(n)]
-        for t in threads: t.start()
-        for t in threads: t.join(timeout=3)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3)
 
         self.assertFalse(errors)
 
@@ -85,8 +89,10 @@ class TestWriterExclusivity(unittest.TestCase):
 
         t1 = threading.Thread(target=writer_1)
         t2 = threading.Thread(target=writer_2)
-        t1.start(); t2.start()
-        t1.join(timeout=3); t2.join(timeout=3)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3)
+        t2.join(timeout=3)
 
         # w1 must complete before w2 starts
         self.assertLess(order.index('w1_end'), order.index('w2_start'))
@@ -110,11 +116,13 @@ class TestWriterExclusivity(unittest.TestCase):
 
         t_w = threading.Thread(target=writer)
         t_r = threading.Thread(target=reader)
-        t_w.start(); t_r.start()
+        t_w.start()
+        t_r.start()
 
         time.sleep(0.05)  # give reader time to block on the write lock
         write_can_finish.set()
-        t_w.join(timeout=3); t_r.join(timeout=3)
+        t_w.join(timeout=3)
+        t_r.join(timeout=3)
 
         self.assertLess(order.index('write_end'), order.index('read'))
 
@@ -142,11 +150,13 @@ class TestReadersBlockWriter(unittest.TestCase):
 
         t_r = threading.Thread(target=reader)
         t_w = threading.Thread(target=writer)
-        t_r.start(); t_w.start()
+        t_r.start()
+        t_w.start()
 
         time.sleep(0.05)  # give writer time to block on the read lock
         read_can_finish.set()
-        t_r.join(timeout=3); t_w.join(timeout=3)
+        t_r.join(timeout=3)
+        t_w.join(timeout=3)
 
         self.assertLess(order.index('read_end'), order.index('write'))
 
@@ -158,7 +168,6 @@ class TestNoDeadlock(unittest.TestCase):
     def test_concurrent_readers_and_writers_complete_without_deadlock(self):
         errors: list[Exception] = []
         counter = [0]
-        counter_lock = threading.Lock()
 
         def reader():
             try:
@@ -180,11 +189,13 @@ class TestNoDeadlock(unittest.TestCase):
             [threading.Thread(target=reader) for _ in range(5)] +
             [threading.Thread(target=writer) for _ in range(3)]
         )
-        for t in threads: t.start()
-        for t in threads: t.join(timeout=5)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
 
         self.assertFalse(errors)
-        self.assertEqual(counter[0], 60)  # 3 writers × 20 increments
+        self.assertEqual(counter[0], 60)  # 3 writers x 20 increments
 
 
 if __name__ == '__main__':

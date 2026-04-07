@@ -192,8 +192,10 @@ class TestConcurrentRegistration(unittest.TestCase):
                 results.append(store)
 
         threads = [threading.Thread(target=caller) for _ in range(20)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         self.assertEqual(len(set(id(s) for s in results)), 1)
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from oj_persistence.store.base import AbstractStore
 
@@ -33,10 +34,10 @@ class PersistenceManager:
     reference to a store and call its methods directly.
     """
 
-    _instance: Optional['PersistenceManager'] = None
+    _instance: PersistenceManager | None = None
     _init_lock: threading.Lock = threading.Lock()
 
-    def __new__(cls) -> 'PersistenceManager':
+    def __new__(cls) -> PersistenceManager:
         if cls._instance is None:
             with cls._init_lock:
                 if cls._instance is None:
@@ -68,7 +69,7 @@ class PersistenceManager:
         with self._registry_lock:
             self._stores[name] = store
 
-    def get_store(self, name: str) -> Optional[AbstractStore]:
+    def get_store(self, name: str) -> AbstractStore | None:
         """Return the store registered under name, or None."""
         return self._stores.get(name)
 
@@ -107,7 +108,7 @@ class PersistenceManager:
         """Remove an entry from the named store. No-op if key not found."""
         self._get_required(store_name).delete(key)
 
-    def list(self, store_name: str, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, store_name: str, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         """Return all values from the named store, optionally filtered by predicate."""
         return self._get_required(store_name).list(predicate)
 
@@ -117,7 +118,7 @@ class PersistenceManager:
         right: str,
         on: Callable[[Any, Any], bool],
         how: str = 'inner',
-        where: Optional[Callable[[Any, Any], bool]] = None,
+        where: Callable[[Any, Any], bool] | None = None,
     ) -> list[tuple[Any, Any]]:
         """
         Relational join across two registered stores.
@@ -136,7 +137,7 @@ class PersistenceManager:
 
         Complexity
         ----------
-        O(m × n) — naive nested loop over store.list() on both sides.
+        O(m x n) — naive nested loop over store.list() on both sides.
         DB-backed stores (SQLite, Postgres, SQLAlchemy, …) should override
         with a delegated query rather than relying on this implementation.
         """

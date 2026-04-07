@@ -38,8 +38,10 @@ class TestConcurrentReads(unittest.TestCase):
                 errors.append(e)
 
         threads = [threading.Thread(target=reader) for _ in range(20)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         self.assertFalse(errors)
         self.assertTrue(all(r == 'v' for r in results))
@@ -56,8 +58,10 @@ class TestConcurrentReads(unittest.TestCase):
                 errors.append(e)
 
         threads = [threading.Thread(target=reader) for _ in range(20)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         self.assertFalse(errors)
 
@@ -91,8 +95,10 @@ class TestConcurrentReadWrite(unittest.TestCase):
 
         w = threading.Thread(target=writer)
         r = threading.Thread(target=reader)
-        w.start(); r.start()
-        w.join(timeout=5); r.join(timeout=5)
+        w.start()
+        r.start()
+        w.join(timeout=5)
+        r.join(timeout=5)
 
         self.assertFalse(w.is_alive(), 'writer deadlocked')
         self.assertFalse(r.is_alive(), 'reader deadlocked')
@@ -121,10 +127,12 @@ class TestConcurrentReadWrite(unittest.TestCase):
 
         w = threading.Thread(target=writer)
         r = threading.Thread(target=reader)
-        w.start(); r.start()
+        w.start()
+        r.start()
         time.sleep(0.2)
         stop.set()
-        w.join(timeout=2); r.join(timeout=2)
+        w.join(timeout=2)
+        r.join(timeout=2)
 
         self.assertFalse(errors)
 
@@ -138,8 +146,10 @@ class TestConcurrentReadWrite(unittest.TestCase):
                 errors.append(e)
 
         threads = [threading.Thread(target=worker, args=(str(i), i)) for i in range(20)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         self.assertFalse(errors)
         self.assertEqual(sorted(self.pm.list('store')), list(range(20)))
@@ -178,8 +188,10 @@ class TestIndependentStores(unittest.TestCase):
 
         t_a = threading.Thread(target=slow_writer_a)
         t_b = threading.Thread(target=writer_b)
-        t_a.start(); t_b.start()
-        t_a.join(timeout=3); t_b.join(timeout=3)
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=3)
+        t_b.join(timeout=3)
 
         self.assertLess(order.index('b_done'), order.index('a_done'))
 
@@ -210,8 +222,10 @@ class TestIndependentStores(unittest.TestCase):
             [threading.Thread(target=reader) for _ in range(5)] +
             [threading.Thread(target=writer) for _ in range(5)]
         )
-        for t in threads: t.start()
-        for t in threads: t.join(timeout=5)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
 
         self.assertFalse(any(t.is_alive() for t in threads), 'deadlock detected')
         self.assertFalse(errors)

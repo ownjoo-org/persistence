@@ -26,7 +26,6 @@ from oj_persistence.store.ijson_file import IjsonFileStore
 from oj_persistence.store.in_memory import InMemoryStore
 from oj_persistence.store.ndjson_file import NdjsonFileStore
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -83,8 +82,10 @@ class TestConcurrentReadsDoNotBlockEachOther(unittest.TestCase):
 
         t1 = threading.Thread(target=reader)
         t2 = threading.Thread(target=reader)
-        t1.start(); t2.start()
-        t1.join(timeout=3); t2.join(timeout=3)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3)
+        t2.join(timeout=3)
 
         self.assertFalse(errors, f"Reads blocked each other: {errors}")
         self.assertEqual(results, ['v', 'v'])
@@ -119,10 +120,12 @@ class TestReadWriteCorrectness:
 
         w = threading.Thread(target=writer)
         r = threading.Thread(target=reader)
-        w.start(); r.start()
+        w.start()
+        r.start()
         time.sleep(0.2)
         stop.set()
-        w.join(timeout=2); r.join(timeout=2)
+        w.join(timeout=2)
+        r.join(timeout=2)
 
         self.assertFalse(errors)
 
@@ -146,8 +149,10 @@ class TestReadWriteCorrectness:
 
         w = threading.Thread(target=writer)
         r = threading.Thread(target=reader)
-        w.start(); r.start()
-        w.join(timeout=5); r.join(timeout=5)
+        w.start()
+        r.start()
+        w.join(timeout=5)
+        r.join(timeout=5)
 
         self.assertFalse(w.is_alive(), "Writer deadlocked")
         self.assertFalse(r.is_alive(), "Reader deadlocked")
@@ -167,8 +172,10 @@ class TestReadWriteCorrectness:
                     errors.append(e)
 
         threads = [threading.Thread(target=reader) for _ in range(6)]
-        for t in threads: t.start()
-        for t in threads: t.join(timeout=5)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
 
         self.assertFalse(errors)
 
@@ -251,8 +258,10 @@ class TestCsvFileStoreConcurrency(TestReadWriteCorrectness, unittest.TestCase):
 
         w = threading.Thread(target=writer)
         r = threading.Thread(target=reader)
-        w.start(); r.start()
-        w.join(timeout=5); r.join(timeout=5)
+        w.start()
+        r.start()
+        w.join(timeout=5)
+        r.join(timeout=5)
 
         self.assertFalse(w.is_alive(), "Writer deadlocked")
         self.assertFalse(r.is_alive(), "Reader deadlocked")
@@ -283,10 +292,12 @@ class TestCsvFileStoreConcurrency(TestReadWriteCorrectness, unittest.TestCase):
 
         w = threading.Thread(target=writer)
         r = threading.Thread(target=reader)
-        w.start(); r.start()
+        w.start()
+        r.start()
         time.sleep(0.2)
         stop.set()
-        w.join(timeout=2); r.join(timeout=2)
+        w.join(timeout=2)
+        r.join(timeout=2)
 
         self.assertFalse(errors)
 

@@ -77,7 +77,8 @@ class TestManagerCRUDL(unittest.TestCase):
         self.store.list.assert_called_once_with(None)
 
     def test_list_with_predicate_delegates_to_store(self):
-        pred = lambda v: True
+        def pred(v):
+            return True
         self.pm.list('s', pred)
         self.store.list.assert_called_once_with(pred)
 

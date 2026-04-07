@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, ClassVar
 
 from oj_persistence.store.base import AbstractStore
 from oj_persistence.utils.rwlock import ReadWriteLock
@@ -52,7 +53,7 @@ class FlatFileStore(AbstractStore):
         FlatFileStore._SERIALIZERS['csv'] = MyCsvSerializer()
     """
 
-    _SERIALIZERS: dict[str, _Serializer] = {
+    _SERIALIZERS: ClassVar[dict[str, _Serializer]] = {
         'json': JsonSerializer(),
     }
 
@@ -117,7 +118,7 @@ class FlatFileStore(AbstractStore):
             data.pop(key, None)
             self._save(data)
 
-    def list(self, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         with self._lock.read():
             data = self._load()
         values = list(data.values())

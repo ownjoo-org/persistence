@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from oj_persistence.store.base import AbstractStore
 from oj_persistence.utils.rwlock import ReadWriteLock
@@ -103,11 +104,43 @@ class NdjsonFileStore(AbstractStore):
             if not self._rewrite(key, value):
                 self._append(key, value)
 
+    def upsert_many(self, items: list[tuple[str, Any]]) -> None:
+        """
+        Upsert a batch of (key, value) pairs in a single file pass.
+
+        One scan rewrites existing keys in place; new keys are appended
+        in one write at the end — O(file_size + batch_size) instead of
+        O(file_size x batch_size) for repeated single upserts.
+        """
+        if not items:
+            return
+        updates = dict(items)  # key → value for O(1) lookup
+        with self._lock.write():
+            found: set[str] = set()
+            if self._path.exists():
+                tmp = Path(str(self._path) + '.tmp')
+                with self._path.open('r', encoding='utf-8') as src, \
+                        tmp.open('w', encoding='utf-8') as dst:
+                    for record in self._iter_lines(src):
+                        k = record['key']
+                        if k in updates:
+                            record['value'] = updates[k]
+                            found.add(k)
+                        dst.write(json.dumps(record) + '\n')
+                tmp.replace(self._path)
+            # Append all keys that were not found (new records)
+            new_items = [(k, v) for k, v in items if k not in found]
+            if new_items:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                with self._path.open('a', encoding='utf-8') as f:
+                    for k, v in new_items:
+                        f.write(json.dumps({'key': k, 'value': v}) + '\n')
+
     def delete(self, key: str) -> None:
         with self._lock.write():
             self._rewrite(key, skip=True)
 
-    def list(self, predicate: Optional[Callable[[Any], bool]] = None) -> list[Any]:
+    def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         with self._lock.read():
             if not self._path.exists():
                 return []
