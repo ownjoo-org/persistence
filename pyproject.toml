@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oj-persistence"
-version = "0.0.2"
+version = "0.0.3"
 description = "Thread-safe persistence management with pluggable storage backends"
 readme = "README.md"
 license = "MIT"
@@ -16,7 +16,13 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "ijson",
+    "tinydb",
+    "sqlalchemy>=2.0",
+    "redis>=5.0",
 ]
+
+[project.optional-dependencies]
+dev = ["aiosqlite", "fakeredis[lua]"]
 
 [project.urls]
 Repository = "https://github.com/ownjoo-org/persistence"

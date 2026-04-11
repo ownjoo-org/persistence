@@ -5,8 +5,9 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from oj_persistence.store.base import AbstractStore
-from oj_persistence.utils.rwlock import ReadWriteLock
+from oj_persistence.store.abstract_file import AbstractFileStore
+from oj_persistence.utils.compression import open_text_csv
+
 
 _MISSING = object()
 _KEY_COL = 'key'
@@ -21,7 +22,7 @@ def _to_dict(value: Any) -> dict[str, str]:
     raise TypeError(f'value must be a dict or iterable of (k, v) tuples, got {type(value)}')
 
 
-class CsvFileStore(AbstractStore):
+class CsvFileStore(AbstractFileStore):
     """
     AbstractStore backed by a CSV file.
 
@@ -39,15 +40,21 @@ class CsvFileStore(AbstractStore):
     loaded into memory at once. Mutations rewrite via a temp file.
 
     Thread-safe via ReadWriteLock — concurrent reads allowed; writes exclusive.
+
+    Compression
+    -----------
+    Pass compression='gzip', 'bz2', 'lzma', or 'auto' (detect from extension)
+    to read and write a compressed file transparently.
     """
 
     def __init__(
         self,
         path: str | Path,
         fieldnames: list[str] | None = None,
+        *,
+        compression: str | None = None,
     ) -> None:
-        self._path = Path(path)
-        self._lock = ReadWriteLock()
+        super().__init__(path, compression=compression)
         self._fieldnames: list[str] | None = None
 
         if fieldnames is not None:
@@ -67,7 +74,7 @@ class CsvFileStore(AbstractStore):
         return [_KEY_COL] + (self._fieldnames or [])
 
     def _read_fieldnames(self) -> list[str]:
-        with self._path.open('r', newline='', encoding='utf-8') as f:
+        with self._open_text_csv('r') as f:
             reader = csv.reader(f)
             header = next(reader, None)
         if header is None:
@@ -80,7 +87,6 @@ class CsvFileStore(AbstractStore):
             extra = set(row) - set(self._fieldnames)
             if extra:
                 raise ValueError(f'Unknown fields {extra}. Expected: {self._fieldnames}')
-            # Fill missing fields with empty string
             return {f: row.get(f, '') for f in self._fieldnames}
         return row
 
@@ -88,7 +94,7 @@ class CsvFileStore(AbstractStore):
         """Create the file with a header row if it does not yet exist."""
         if not self._path.exists():
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open('w', newline='', encoding='utf-8') as f:
+            with self._open_text_csv('w') as f:
                 csv.DictWriter(f, fieldnames=self._all_columns()).writeheader()
 
     def _init_fieldnames(self, row: dict[str, str]) -> None:
@@ -113,8 +119,8 @@ class CsvFileStore(AbstractStore):
         tmp = Path(str(self._path) + '.tmp')
         found = False
         columns = self._all_columns()
-        with self._path.open('r', newline='', encoding='utf-8') as src, \
-                tmp.open('w', newline='', encoding='utf-8') as dst:
+        with self._open_text_csv('r') as src, \
+                open_text_csv(tmp, 'w', self._compression) as dst:
             reader = csv.DictReader(src)
             writer = csv.DictWriter(dst, fieldnames=columns)
             writer.writeheader()
@@ -131,7 +137,7 @@ class CsvFileStore(AbstractStore):
         return found
 
     def _append(self, key: str, row: dict[str, str]) -> None:
-        with self._path.open('a', newline='', encoding='utf-8') as f:
+        with self._open_text_csv('a') as f:
             writer = csv.DictWriter(f, fieldnames=self._all_columns())
             writer.writerow({_KEY_COL: key, **row})
 
@@ -147,7 +153,7 @@ class CsvFileStore(AbstractStore):
             else:
                 self._ensure_file()
             row = self._validate_and_normalise(value)
-            with self._path.open('r', newline='', encoding='utf-8') as f:
+            with self._open_text_csv('r') as f:
                 for r in csv.DictReader(f):
                     if r[_KEY_COL] == key:
                         raise KeyError(key)
@@ -157,7 +163,7 @@ class CsvFileStore(AbstractStore):
         with self._lock.read():
             if not self._path.exists():
                 return None
-            with self._path.open('r', newline='', encoding='utf-8') as f:
+            with self._open_text_csv('r') as f:
                 for row in csv.DictReader(f):
                     if row[_KEY_COL] == key:
                         return {k: v for k, v in row.items() if k != _KEY_COL}
@@ -188,7 +194,7 @@ class CsvFileStore(AbstractStore):
             if not self._path.exists():
                 return []
             results = []
-            with self._path.open('r', newline='', encoding='utf-8') as f:
+            with self._open_text_csv('r') as f:
                 for row in csv.DictReader(f):
                     v = {k: val for k, val in row.items() if k != _KEY_COL}
                     if predicate is None or predicate(v):

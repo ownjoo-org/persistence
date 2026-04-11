@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from oj_persistence.store.base import AbstractStore
 from oj_persistence.utils.rwlock import ReadWriteLock
 
 
-class InMemoryStore:
+class InMemoryStore(AbstractStore):
     """
     AbstractStore backed by an in-process dict.
 

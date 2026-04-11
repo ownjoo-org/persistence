@@ -5,8 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
-from oj_persistence.store.base import AbstractStore
-from oj_persistence.utils.rwlock import ReadWriteLock
+from oj_persistence.store.abstract_file import AbstractFileStore
 
 
 class _Serializer:
@@ -37,7 +36,7 @@ class JsonSerializer(_Serializer):
         json.dump(data, fp, indent=2)
 
 
-class FlatFileStore(AbstractStore):
+class FlatFileStore(AbstractFileStore):
     """
     AbstractStore backed by a single flat file on disk.
 
@@ -51,21 +50,25 @@ class FlatFileStore(AbstractStore):
     Format support is pluggable via _SERIALIZERS. To add a new format,
     subclass _Serializer and register it:
         FlatFileStore._SERIALIZERS['csv'] = MyCsvSerializer()
+
+    Compression
+    -----------
+    Pass compression='gzip', 'bz2', 'lzma', or 'auto' (detect from extension)
+    to read and write a compressed file transparently.
     """
 
     _SERIALIZERS: ClassVar[dict[str, _Serializer]] = {
         'json': JsonSerializer(),
     }
 
-    def __init__(self, path: str | Path, fmt: str = 'json') -> None:
+    def __init__(self, path: str | Path, fmt: str = 'json', *, compression: str | None = None) -> None:
         if fmt not in self._SERIALIZERS:
             raise ValueError(
                 f"Unsupported format '{fmt}'. "
                 f"Available: {list(self._SERIALIZERS)}"
             )
-        self._path = Path(path)
+        super().__init__(path, compression=compression)
         self._serializer = self._SERIALIZERS[fmt]
-        self._lock = ReadWriteLock()
 
     # ------------------------------------------------------------------
     # Internal I/O
@@ -74,12 +77,12 @@ class FlatFileStore(AbstractStore):
     def _load(self) -> dict[str, Any]:
         if not self._path.exists():
             return {}
-        with self._path.open('r', encoding='utf-8') as fp:
+        with self._open_text('r', encoding='utf-8') as fp:
             return self._serializer.load(fp)
 
     def _save(self, data: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open('w', encoding='utf-8') as fp:
+        with self._open_text('w', encoding='utf-8') as fp:
             self._serializer.dump(data, fp)
 
     # ------------------------------------------------------------------

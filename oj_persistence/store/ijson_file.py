@@ -7,13 +7,14 @@ from typing import Any
 
 import ijson
 
-from oj_persistence.store.base import AbstractStore
-from oj_persistence.utils.rwlock import ReadWriteLock
+from oj_persistence.store.abstract_file import AbstractFileStore
+from oj_persistence.utils.compression import open_binary, open_text
+
 
 _MISSING = object()
 
 
-class IjsonFileStore(AbstractStore):
+class IjsonFileStore(AbstractFileStore):
     """
     AbstractStore backed by a standard JSON object file, read via ijson.
 
@@ -33,11 +34,17 @@ class IjsonFileStore(AbstractStore):
 
     Thread-safe via RLock. Temp files use the same parent directory to
     guarantee atomic rename (same filesystem).
+
+    Compression
+    -----------
+    Pass compression='gzip', 'bz2', 'lzma', or 'auto' (detect from extension)
+    to read and write a compressed file transparently. ijson operates on binary
+    streams, so compressed files are opened in binary mode and decompressed
+    transparently.
     """
 
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
-        self._lock = ReadWriteLock()
+    def __init__(self, path: str | Path, *, compression: str | None = None) -> None:
+        super().__init__(path, compression=compression)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -45,7 +52,7 @@ class IjsonFileStore(AbstractStore):
 
     def _init_file(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open('w', encoding='utf-8') as f:
+        with self._open_text('w', encoding='utf-8') as f:
             f.write('{}')
 
     def _rewrite(
@@ -65,7 +72,8 @@ class IjsonFileStore(AbstractStore):
         """
         tmp = Path(str(self._path) + '.tmp')
         found = False
-        with self._path.open('rb') as src, tmp.open('w', encoding='utf-8') as dst:
+        with self._open_binary('rb') as src, \
+                open_text(tmp, 'w', self._compression, encoding='utf-8') as dst:
             dst.write('{\n')
             first = True
             for k, v in ijson.kvitems(src, ''):
@@ -94,7 +102,7 @@ class IjsonFileStore(AbstractStore):
         with self._lock.write():
             if not self._path.exists():
                 self._init_file()
-            with self._path.open('rb') as f:
+            with self._open_binary('rb') as f:
                 for k, _ in ijson.kvitems(f, ''):
                     if k == key:
                         raise KeyError(key)
@@ -104,7 +112,7 @@ class IjsonFileStore(AbstractStore):
         with self._lock.read():
             if not self._path.exists():
                 return None
-            with self._path.open('rb') as f:
+            with self._open_binary('rb') as f:
                 for k, v in ijson.kvitems(f, ''):
                     if k == key:
                         return v
@@ -131,7 +139,7 @@ class IjsonFileStore(AbstractStore):
             if not self._path.exists():
                 return []
             results = []
-            with self._path.open('rb') as f:
+            with self._open_binary('rb') as f:
                 for _, v in ijson.kvitems(f, ''):
                     if predicate is None or predicate(v):
                         results.append(v)

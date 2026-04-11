@@ -5,15 +5,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from oj_persistence.store.base import AbstractStore
-from oj_persistence.utils.rwlock import ReadWriteLock
+from oj_persistence.store.abstract_file import AbstractFileStore
+from oj_persistence.utils.compression import open_text
+
 
 _MISSING = object()
 
 
-class NdjsonFileStore(AbstractStore):
+class NdjsonFileStore(AbstractFileStore):
     """
     AbstractStore backed by a Newline-Delimited JSON (NDJSON) file.
+
+    Best suited for append-heavy streaming workloads where records are written
+    once and rarely updated. For general-purpose local persistence with indexed
+    key lookups, prefer SqliteStore.
 
     Each record occupies exactly one line:
         {"key": "...", "value": <any JSON-serialisable value>}
@@ -26,11 +31,15 @@ class NdjsonFileStore(AbstractStore):
 
     Thread-safe via RLock. Temp files use the same parent directory to
     guarantee atomic rename (same filesystem).
+
+    Compression
+    -----------
+    Pass compression='gzip', 'bz2', 'lzma', or 'auto' (detect from extension)
+    to read and write a compressed file transparently.
     """
 
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
-        self._lock = ReadWriteLock()
+    def __init__(self, path: str | Path, *, compression: str | None = None) -> None:
+        super().__init__(path, compression=compression)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -45,7 +54,7 @@ class NdjsonFileStore(AbstractStore):
 
     def _append(self, key: str, value: Any) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open('a', encoding='utf-8') as f:
+        with self._open_text('a', encoding='utf-8') as f:
             f.write(json.dumps({'key': key, 'value': value}) + '\n')
 
     def _rewrite(self, key: str, new_value: Any = _MISSING, *, skip: bool = False) -> bool:
@@ -59,8 +68,8 @@ class NdjsonFileStore(AbstractStore):
             return False
         tmp = Path(str(self._path) + '.tmp')
         found = False
-        with self._path.open('r', encoding='utf-8') as src, \
-                tmp.open('w', encoding='utf-8') as dst:
+        with self._open_text('r', encoding='utf-8') as src, \
+                open_text(tmp, 'w', self._compression, encoding='utf-8') as dst:
             for record in self._iter_lines(src):
                 if record['key'] == key:
                     found = True
@@ -78,7 +87,7 @@ class NdjsonFileStore(AbstractStore):
     def create(self, key: str, value: Any) -> None:
         with self._lock.write():
             if self._path.exists():
-                with self._path.open('r', encoding='utf-8') as f:
+                with self._open_text('r', encoding='utf-8') as f:
                     for record in self._iter_lines(f):
                         if record['key'] == key:
                             raise KeyError(key)
@@ -88,7 +97,7 @@ class NdjsonFileStore(AbstractStore):
         with self._lock.read():
             if not self._path.exists():
                 return None
-            with self._path.open('r', encoding='utf-8') as f:
+            with self._open_text('r', encoding='utf-8') as f:
                 for record in self._iter_lines(f):
                     if record['key'] == key:
                         return record['value']
@@ -114,13 +123,13 @@ class NdjsonFileStore(AbstractStore):
         """
         if not items:
             return
-        updates = dict(items)  # key → value for O(1) lookup
+        updates = dict(items)
         with self._lock.write():
             found: set[str] = set()
             if self._path.exists():
                 tmp = Path(str(self._path) + '.tmp')
-                with self._path.open('r', encoding='utf-8') as src, \
-                        tmp.open('w', encoding='utf-8') as dst:
+                with self._open_text('r', encoding='utf-8') as src, \
+                        open_text(tmp, 'w', self._compression, encoding='utf-8') as dst:
                     for record in self._iter_lines(src):
                         k = record['key']
                         if k in updates:
@@ -128,11 +137,10 @@ class NdjsonFileStore(AbstractStore):
                             found.add(k)
                         dst.write(json.dumps(record) + '\n')
                 tmp.replace(self._path)
-            # Append all keys that were not found (new records)
             new_items = [(k, v) for k, v in items if k not in found]
             if new_items:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                with self._path.open('a', encoding='utf-8') as f:
+                with self._open_text('a', encoding='utf-8') as f:
                     for k, v in new_items:
                         f.write(json.dumps({'key': k, 'value': v}) + '\n')
 
@@ -145,7 +153,7 @@ class NdjsonFileStore(AbstractStore):
             if not self._path.exists():
                 return []
             results = []
-            with self._path.open('r', encoding='utf-8') as f:
+            with self._open_text('r', encoding='utf-8') as f:
                 for record in self._iter_lines(f):
                     v = record['value']
                     if predicate is None or predicate(v):

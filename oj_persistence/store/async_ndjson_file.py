@@ -13,6 +13,11 @@ class AsyncNdjsonFileStore(AsyncAbstractStore):
     """
     Async, buffered wrapper around NdjsonFileStore.
 
+    Best suited for append-heavy streaming pipelines where records are written
+    once and rarely updated. For async pipelines that need indexed key lookups
+    or external database durability, prefer AsyncSqliteStore or
+    AsyncSqlAlchemyStore.
+
     Writes are accumulated in memory and flushed to disk in two situations:
 
     1. **Size trigger**: the buffer reaches ``batch_size`` items — flush fires

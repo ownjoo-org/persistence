@@ -5,8 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from oj_persistence.store.base import AbstractStore
-
-_VALID_JOIN_TYPES = {'inner', 'left', 'right', 'outer'}
+from oj_persistence.utils.join import VALID_JOIN_TYPES, apply_join
 
 
 class PersistenceManager:
@@ -20,7 +19,7 @@ class PersistenceManager:
     Correct usage — all data operations go through the manager:
 
         pm = PersistenceManager()
-        pm.get_or_create('users', lambda: InMemoryStore())   # register once
+        pm.get_or_create('users', lambda: SqliteStore('users.db'))  # register once
         pm.create('users', 'u1', {'name': 'Alice'})
         pm.read('users', 'u1')
         pm.update('users', 'u1', {'name': 'Bob'})
@@ -141,55 +140,9 @@ class PersistenceManager:
         DB-backed stores (SQLite, Postgres, SQLAlchemy, …) should override
         with a delegated query rather than relying on this implementation.
         """
-        if how not in _VALID_JOIN_TYPES:
-            raise ValueError(f"Invalid how='{how}'. Expected one of: {sorted(_VALID_JOIN_TYPES)}")
+        if how not in VALID_JOIN_TYPES:
+            raise ValueError(f"Invalid how='{how}'. Expected one of: {sorted(VALID_JOIN_TYPES)}")
 
         left_vals = self._get_required(left).list()
         right_vals = self._get_required(right).list()
-        results: list[tuple[Any, Any]] = []
-
-        if how == 'inner':
-            for lv in left_vals:
-                for rv in right_vals:
-                    if on(lv, rv) and (where is None or where(lv, rv)):
-                        results.append((lv, rv))
-
-        elif how == 'left':
-            for lv in left_vals:
-                has_on_match = False
-                for rv in right_vals:
-                    if on(lv, rv):
-                        has_on_match = True
-                        if where is None or where(lv, rv):
-                            results.append((lv, rv))
-                if not has_on_match:
-                    results.append((lv, None))
-
-        elif how == 'right':
-            for rv in right_vals:
-                has_on_match = False
-                for lv in left_vals:
-                    if on(lv, rv):
-                        has_on_match = True
-                        if where is None or where(lv, rv):
-                            results.append((lv, rv))
-                if not has_on_match:
-                    results.append((None, rv))
-
-        elif how == 'outer':
-            matched_right: set[int] = set()
-            for lv in left_vals:
-                has_on_match = False
-                for i, rv in enumerate(right_vals):
-                    if on(lv, rv):
-                        has_on_match = True
-                        matched_right.add(i)
-                        if where is None or where(lv, rv):
-                            results.append((lv, rv))
-                if not has_on_match:
-                    results.append((lv, None))
-            for i, rv in enumerate(right_vals):
-                if i not in matched_right:
-                    results.append((None, rv))
-
-        return results
+        return apply_join(left_vals, right_vals, on, how, where)
