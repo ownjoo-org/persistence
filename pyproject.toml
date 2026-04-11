@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["aiosqlite", "fakeredis[lua]"]
+dev = ["aiosqlite", "fakeredis[lua]", "pytest"]
 
 [project.urls]
 Repository = "https://github.com/ownjoo-org/persistence"
