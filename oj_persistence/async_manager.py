@@ -63,7 +63,7 @@ class AsyncPersistenceManager:
         store_type = cfg.pop('type')
 
         if store_type == 'sqlite':
-            from oj_persistence.store.async_sqlalchemy import AsyncSqlAlchemyStore
+            from oj_persistence.store.async_sqlalchemy_store import AsyncSqlAlchemyStore
             path = cfg.pop('path', ':memory:')
             table = cfg.pop('table', 'store')
             if path != ':memory:':
