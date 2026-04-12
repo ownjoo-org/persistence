@@ -229,6 +229,36 @@ ON = lambda u, o: u['id'] == o['user_id']
 pairs = await pm.join('users', 'orders', on=ON, how='left')
 ```
 
+#### configure() — set up stores from config
+
+`configure()` creates, initializes, and registers a store in one async call.
+Pass the store type and any type-specific keyword arguments:
+
+```python
+pm = AsyncPersistenceManager()
+
+# SQLite — one database file, multiple named tables
+await pm.configure('users',    type='sqlite', path='data/app.db', table='users')
+await pm.configure('orders',   type='sqlite', path='data/app.db', table='orders')
+
+# In-memory (tests, ephemeral caches)
+await pm.configure('cache', type='in_memory')
+
+# All data ops work immediately after configure()
+await pm.upsert('users', 'u1', {'name': 'Alice'})
+```
+
+Supported types and their kwargs:
+
+| type | kwargs | notes |
+|---|---|---|
+| `sqlite` | `path` (default `':memory:'`), `table` (default `'store'`) | requires `aiosqlite` |
+| `in_memory` | — | no persistence; suitable for tests |
+
+`configure()` is idempotent per name — if the store already exists it is
+replaced. The directory for `path` is created automatically if it does not
+exist.
+
 ### Async pipeline (io_chains PersistenceLink)
 
 ```python

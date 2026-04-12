@@ -41,6 +41,48 @@ class AsyncPersistenceManager:
                     cls._instance = instance
         return cls._instance
 
+    # ------------------------------------------------------------------ configuration
+
+    async def configure(self, name: str, **store_config) -> None:
+        """
+        Create, initialize, and register a store from keyword config.
+
+        Supported types
+        ---------------
+        sqlite    : path (default ':memory:'), table (default 'store')
+        in_memory : no additional kwargs
+
+        Example
+        -------
+            await pm.configure('users', type='sqlite', path='data/app.db', table='users')
+            await pm.configure('cache', type='in_memory')
+        """
+        from pathlib import Path
+
+        cfg = dict(store_config)
+        store_type = cfg.pop('type')
+
+        if store_type == 'sqlite':
+            from oj_persistence.store.async_sqlalchemy import AsyncSqlAlchemyStore
+            path = cfg.pop('path', ':memory:')
+            table = cfg.pop('table', 'store')
+            if path != ':memory:':
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                url = f'sqlite+aiosqlite:///{path}'
+            else:
+                url = 'sqlite+aiosqlite:///:memory:'
+            store = AsyncSqlAlchemyStore(url, table=table, **cfg)
+            await store.initialize()
+        elif store_type == 'in_memory':
+            from oj_persistence.store.async_in_memory import AsyncInMemoryStore
+            store = AsyncInMemoryStore(**cfg)
+        else:
+            raise ValueError(
+                f"Unknown store type {store_type!r}. Supported: sqlite, in_memory"
+            )
+
+        self.register(name, store)
+
     # ------------------------------------------------------------------ registry
 
     def get_or_create(self, name: str, factory: Callable[[], AsyncAbstractStore]) -> AsyncAbstractStore:
