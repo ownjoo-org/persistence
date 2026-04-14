@@ -220,5 +220,55 @@ class TestAsyncPersistenceManagerListByField(unittest.IsolatedAsyncioTestCase):
             await self.pm.list_by_field('mem', '$.role', 'admin')
 
 
+class TestAsyncPersistenceManagerStoreContext(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        AsyncPersistenceManager._instance = None
+        self.pm = AsyncPersistenceManager()
+
+    def tearDown(self):
+        AsyncPersistenceManager._instance = None
+
+    async def test_store_context_unknown_store_raises(self):
+        with self.assertRaises(KeyError):
+            async with self.pm.store_context('ghost'):
+                pass
+
+    async def test_store_context_is_async_context_manager(self):
+        self.pm.register('mem', AsyncInMemoryStore())
+        async with self.pm.store_context('mem'):
+            pass  # must not raise
+
+    async def test_store_context_write_then_exit_is_readable(self):
+        """Items written inside the context are readable after exit (flush guarantee)."""
+        self.pm.register('mem', AsyncInMemoryStore())
+        async with self.pm.store_context('mem'):
+            await self.pm.upsert('mem', 'k', 'v')
+        self.assertEqual(await self.pm.read('mem', 'k'), 'v')
+
+    async def test_store_context_flushes_ndjson_on_exit(self):
+        """AsyncNdjsonFileStore buffers writes; store_context guarantees flush on exit."""
+        import os
+        import tempfile
+        from oj_persistence.store.async_ndjson_file import AsyncNdjsonFileStore
+
+        with tempfile.NamedTemporaryFile(suffix='.ndjson', delete=False) as f:
+            path = f.name
+        try:
+            store = AsyncNdjsonFileStore(path)
+            self.pm.register('ndjson', store)
+            async with self.pm.store_context('ndjson'):
+                await self.pm.upsert('ndjson', 'k', {'x': 1}, allow_inefficient=True)
+            # After exit the buffer must have been flushed — item is readable
+            self.assertEqual(await self.pm.read('ndjson', 'k'), {'x': 1})
+        finally:
+            os.unlink(path)
+
+    async def test_store_context_does_not_expose_store_reference(self):
+        """The context manager yields nothing — store stays hidden."""
+        self.pm.register('mem', AsyncInMemoryStore())
+        async with self.pm.store_context('mem') as ctx:
+            self.assertIsNone(ctx)
+
+
 if __name__ == '__main__':
     unittest.main()

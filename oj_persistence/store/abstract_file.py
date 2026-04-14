@@ -15,6 +15,9 @@ from oj_persistence.utils.rwlock import ReadWriteLock
 
 
 class AbstractFileStore(AbstractStore):
+    # File stores require a full read-modify-rewrite cycle to satisfy upsert.
+    # The manager blocks upsert() on these stores unless allow_inefficient=True.
+    supports_native_upsert: bool = False
     """
     Base class for all file-backed stores.
 

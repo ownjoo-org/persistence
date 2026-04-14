@@ -40,6 +40,10 @@ class VersionedStore(AbstractStore):
     def __init__(self, store: AbstractStore) -> None:
         self._store = store
 
+    @property
+    def supports_native_upsert(self) -> bool:
+        return self._store.supports_native_upsert
+
     # ------------------------------------------------------------------ internal helpers
 
     @staticmethod

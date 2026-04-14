@@ -1,5 +1,8 @@
 from oj_persistence.async_manager import AsyncPersistenceManager
+from oj_persistence.exceptions import UpsertNotSupportedError
 from oj_persistence.manager import PersistenceManager
+from oj_persistence.refs import GroupRef, StoreRef
+from oj_persistence.relation import JoinCondition, Op, Relation
 from oj_persistence.store.abstract_file import AbstractFileStore
 from oj_persistence.store.async_base import AsyncAbstractStore
 from oj_persistence.store.async_in_memory import AsyncInMemoryStore
@@ -17,6 +20,12 @@ from oj_persistence.store.versioned import VersionedStore
 __all__ = [
     'AbstractFileStore',
     'AbstractStore',
+    'GroupRef',
+    'JoinCondition',
+    'Op',
+    'Relation',
+    'StoreRef',
+    'UpsertNotSupportedError',
     'AsyncAbstractStore',
     'AsyncInMemoryStore',
     'AsyncNdjsonFileStore',

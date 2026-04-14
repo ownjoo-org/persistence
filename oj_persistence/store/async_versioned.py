@@ -17,6 +17,10 @@ class AsyncVersionedStore(AsyncAbstractStore):
     def __init__(self, store: AsyncAbstractStore) -> None:
         self._store = store
 
+    @property
+    def supports_native_upsert(self) -> bool:
+        return self._store.supports_native_upsert
+
     # ------------------------------------------------------------------ internal helpers
 
     @staticmethod

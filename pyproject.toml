@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oj-persistence"
-version = "0.0.5"
+version = "0.0.6"
 description = "Thread-safe persistence management with pluggable storage backends"
 readme = "README.md"
 license = "MIT"

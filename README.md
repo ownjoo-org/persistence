@@ -20,16 +20,14 @@ pip install aiosqlite         # SQLite via AsyncSqliteStore / AsyncSqlAlchemySto
 ## Quick start
 
 ```python
-from oj_persistence import PersistenceManager, SqliteStore
+from oj_persistence import PersistenceManager
 
 pm = PersistenceManager()
 
 # Register stores by name — all data ops go through the manager
-pm.get_or_create('users', lambda: SqliteStore('users.db'))
+ref = pm.configure('sqlite', store_id='users', path='users.db')
 
 pm.create('users', 'u1', {'name': 'Alice', 'role': 'admin'})
-pm.upsert('users', 'u2', {'name': 'Bob',   'role': 'viewer'})
-
 pm.read('users', 'u1')                                    # {'name': 'Alice', 'role': 'admin'}
 pm.update('users', 'u1', {'name': 'Alice', 'role': 'owner'})
 pm.delete('users', 'u2')
@@ -37,16 +35,204 @@ pm.delete('users', 'u2')
 admins = pm.list('users', predicate=lambda v: v['role'] == 'owner')
 ```
 
+---
+
+## Manager-as-gatekeeper
+
+Both `PersistenceManager` and `AsyncPersistenceManager` are **singletons**. All data
+operations go through the manager — callers never hold a direct reference to a store.
+Stores are identified by a `store_id` string; the underlying connection details (file
+path, table name, shared connection) are hidden inside the manager.
+
+```
+caller → PersistenceManager.create/read/update/delete/list
+                        ↓
+              named store registry
+                        ↓
+              AbstractStore (sqlite, redis, …)
+```
+
+### Registering stores
+
+Three ways to register a store, in order of preference:
+
+```python
+# 1. configure() — one call creates the group, table, and store reference
+ref = pm.configure('sqlite', store_id='users', path='users.db')
+
+# 2. register() — attach an already-constructed store
+from oj_persistence import SqliteStore
+pm.register('cache', SqliteStore(':memory:'))
+
+# 3. get_or_create() — lazy registration with a factory (factory called once)
+pm.get_or_create('users', lambda: SqliteStore('users.db'))
+```
+
+`configure()` returns a `StoreRef` — an opaque frozen dataclass holding
+`store_id`, `group_id`, `table_id`, and `store_type`.  Hold onto `ref.store_id`
+to use in subsequent CRUDL calls; the rest is for introspection only.
+
+---
+
 ## CRUDL semantics
 
-| Method   | Behaviour                               |
-|----------|-----------------------------------------|
+| Method   | Behaviour |
+|----------|-----------|
 | `create` | Raises `KeyError` if key already exists |
-| `read`   | Returns `None` if key is missing        |
+| `read`   | Returns `None` if key is missing |
 | `update` | Raises `KeyError` if key does not exist |
-| `upsert` | Creates or overwrites — never raises    |
-| `delete` | No-op if key is missing                 |
+| `upsert` | Creates or overwrites; raises `UpsertNotSupportedError` for file-backed stores unless `allow_inefficient=True` |
+| `delete` | No-op if key is missing |
 | `list`   | Returns all values, optionally filtered |
+
+### Upsert guard
+
+File-backed stores (`NdjsonFileStore`, `CsvFileStore`, `FlatFileStore`, `IjsonFileStore`,
+`AsyncNdjsonFileStore`) require a full file rewrite for every `upsert`. The manager
+blocks this by default:
+
+```python
+from oj_persistence import UpsertNotSupportedError
+
+# Raises UpsertNotSupportedError — avoids silently expensive rewrites
+pm.upsert('events', 'e1', {'type': 'login'})
+
+# Override when you accept the cost
+pm.upsert('events', 'e1', {'type': 'login'}, allow_inefficient=True)
+```
+
+For these stores, prefer `create()` for new records and `update()` for existing ones.
+All SQL-backed and in-memory stores (`SqliteStore`, `SqlAlchemyStore`, `RedisStore`,
+`InMemoryStore`, and async variants) support native upsert and are never blocked.
+
+---
+
+## Store groups — multiple tables, one backing store
+
+Use `create_group()` + `add_table()` when multiple logical stores must share the same
+SQLite database file (so SQL JOINs can run inside the database rather than in Python):
+
+```python
+# Sync
+group = pm.create_group('sqlite', path='app.db')
+users_ref  = pm.add_table(group.group_id, store_id='users')
+orders_ref = pm.add_table(group.group_id, store_id='orders')
+
+# Async — add_table is async
+group = pm.create_group('sqlite', path='app.db')
+users_ref  = await pm.add_table(group.group_id, store_id='users')
+orders_ref = await pm.add_table(group.group_id, store_id='orders')
+```
+
+All tables in the same group share one `sqlite3.Connection`, enabling native SQL
+`INNER JOIN` / `LEFT JOIN` push-down via `relate()` (see [Relations](#relations)).
+
+`store_id` and `table_id` are auto-UUID'd when omitted.
+
+### configure() — single-table convenience
+
+When you only need one table per backing store, `configure()` wraps `create_group` +
+`add_table` in one call:
+
+```python
+# Sync
+ref = pm.configure('sqlite', store_id='users', path='users.db')
+ref = pm.configure('in_memory', store_id='cache')
+
+# Async
+ref = await pm.configure('sqlite', store_id='users', path='users.db')
+ref = await pm.configure('in_memory', store_id='cache')
+```
+
+Supported store types and their keyword arguments:
+
+| `store_type` | kwargs | notes |
+|---|---|---|
+| `sqlite`    | `path` (default `':memory:'`) | Each `configure()` call opens its own connection |
+| `in_memory` | — | No persistence; suitable for tests |
+
+### Catalog
+
+```python
+# All stores registered via configure() or add_table()
+pm.catalog()        # dict[store_id, StoreRef]
+pm.group_catalog()  # dict[group_id, GroupRef]
+```
+
+---
+
+## Relations
+
+For structured cross-store queries, use the declarative `Relation` API instead of
+free-function `join()`. Relations support field projection, post-join filters, and
+automatic SQL push-down for same-group SQLite stores.
+
+```python
+from oj_persistence import Relation, JoinCondition, Op
+
+rel = Relation(
+    left_store='users',
+    right_store='orders',
+    on=JoinCondition('id', Op.EQ, 'user_id'),
+    how='inner',                            # 'inner' | 'left' | 'right' | 'outer'
+    left_fields=['id', 'name'],             # project left side (None = all fields)
+    right_fields=['order_id', 'total'],     # project right side
+    where=lambda u, o: o['total'] > 100,   # post-join filter on matched pairs
+)
+
+pairs = pm.relate(rel)
+# or
+pairs = await async_pm.relate(rel)
+```
+
+`Op` supports: `EQ`, `NE`, `LT`, `LE`, `GT`, `GE` (maps to `==`, `!=`, `<`, `<=`, `>`, `>=`).
+
+Multiple conditions are ANDed:
+
+```python
+on=[
+    JoinCondition('dept_id', Op.EQ, 'dept_id'),
+    JoinCondition('joined_year', Op.GE, 'fiscal_year'),
+]
+```
+
+### Same-group SQL push-down
+
+When both stores belong to the same SQLite group (via `create_group` + `add_table`),
+`relate()` pushes `INNER JOIN` and `LEFT JOIN` down into the shared SQLite connection —
+no Python-side data fetching required:
+
+```python
+group = pm.create_group('sqlite', path='app.db')
+users_ref  = pm.add_table(group.group_id, store_id='users')
+orders_ref = pm.add_table(group.group_id, store_id='orders')
+
+pm.relate(Relation('users', 'orders', on=JoinCondition('id', Op.EQ, 'user_id')))
+# → executes: SELECT l.value, r.value FROM users l INNER JOIN orders r ON ...
+```
+
+`RIGHT` and `OUTER` joins always use the Python path (not supported as SQL in SQLite).
+The `where` filter is always applied in Python after the join.
+
+### Ad-hoc joins
+
+For quick lambda-predicate joins without field projection, use `join()`:
+
+```python
+ON = lambda user, order: user['id'] == order['user_id']
+
+results = pm.join('users', 'orders', on=ON, how='left',
+                  where=lambda u, o: o['total'] > 100)
+# returns list of (left_val, right_val) tuples; unmatched sides are None
+```
+
+Supported `how` values: `inner` (default), `left`, `right`, `outer`.
+
+> **Note:** `join()` and the Python-path fallback in `relate()` call `list()` on both
+> stores and perform an O(m × n) nested loop. For large datasets, prefer same-group
+> `relate()` with SQL push-down or a query pushed down via `SqlAlchemyStore`.
+
+---
 
 ## Storage backends
 
@@ -92,7 +278,81 @@ other async pipelines.
 | `AsyncNdjsonFileStore` | NDJSON file | Buffered writes flushed on context exit or batch-size trigger |
 | `AsyncVersionedStore` | Any `AsyncAbstractStore` | Async envelope wrapper; full history with `read_latest()` and `list_versions()` |
 
+---
+
 ## Usage examples
+
+### AsyncPersistenceManager — async registry
+
+`AsyncPersistenceManager` is the async counterpart to `PersistenceManager`.
+Registry methods (`register`, `get_store`, `get_or_create`, `unregister`) are
+synchronous; all data operations are `async`.
+
+```python
+from oj_persistence import AsyncPersistenceManager
+
+pm = AsyncPersistenceManager()
+
+# Set up stores (configure is async for the async manager)
+ref = await pm.configure('sqlite', store_id='users', path='users.db')
+
+await pm.create('users', 'u1', {'name': 'Alice'})
+await pm.upsert('users', 'u2', {'name': 'Bob'})
+await pm.read('users', 'u1')
+
+# SQL pushdown via list_by_field
+await pm.list_by_field('users', '$.role', 'admin')
+
+# Relational join across two async stores
+pairs = await pm.join('users', 'orders', on=lambda u, o: u['id'] == o['user_id'], how='left')
+
+# Declarative relation with SQL push-down (same-group SQLite)
+from oj_persistence import Relation, JoinCondition, Op
+pairs = await pm.relate(Relation('users', 'orders', on=JoinCondition('id', Op.EQ, 'user_id')))
+```
+
+### store_context() — flush guarantee for pipelines
+
+`store_context(store_id)` is an async context manager that enters the named store's
+lifecycle. Use it to guarantee buffered writes (e.g. `AsyncNdjsonFileStore`) are
+flushed on exit. The store reference is never exposed to the caller.
+
+```python
+async with pm.store_context('events'):
+    await pm.create('events', 'e1', {'type': 'login'})
+# buffer is flushed here — 'e1' is durable on disk
+```
+
+This is primarily used by `PersistenceLink` internally. Call it directly when you need
+the same flush guarantee outside a pipeline.
+
+### PersistenceLink (io_chains)
+
+`PersistenceLink` is a mid-chain tap in an `io_chains` pipeline. It writes each item
+to a named store via the manager, then passes the item downstream unchanged. The store's
+lifecycle context is managed automatically.
+
+```python
+from oj_persistence import AsyncPersistenceManager, AsyncSqliteStore
+from io_chains.links.persistence_link import PersistenceLink
+from io_chains.links.chain import Chain
+
+pm = AsyncPersistenceManager()
+pm.register('users', AsyncSqliteStore('users.db'))
+
+chain = Chain(
+    source=fetch_users(),
+    links=[
+        PersistenceLink(
+            manager=pm,
+            store_id='users',
+            key_fn=lambda item: item['id'],
+            operation='upsert',         # 'upsert' (default) | 'create' | 'update'
+        ),
+    ],
+)
+await chain()
+```
 
 ### SqlAlchemyStore — external databases
 
@@ -206,77 +466,6 @@ store.list()               # [latest value per key]
 
 The async variant `AsyncVersionedStore` mirrors this interface with `await`.
 
-### AsyncPersistenceManager — async registry
-
-`AsyncPersistenceManager` is the async counterpart to `PersistenceManager`.
-Registry methods (`register`, `get_store`, `get_or_create`, `unregister`) are
-synchronous; all data operations are `async`.
-
-```python
-from oj_persistence import AsyncPersistenceManager, AsyncSqliteStore
-
-pm = AsyncPersistenceManager()
-pm.get_or_create('users', lambda: AsyncSqliteStore('users.db'))
-
-await pm.upsert('users', 'u1', {'name': 'Alice'})
-await pm.read('users', 'u1')
-
-# SQL pushdown via list_by_field
-await pm.list_by_field('users', '$.role', 'admin')
-
-# Relational join across two async stores
-ON = lambda u, o: u['id'] == o['user_id']
-pairs = await pm.join('users', 'orders', on=ON, how='left')
-```
-
-#### configure() — set up stores from config
-
-`configure()` creates, initializes, and registers a store in one async call.
-Pass the store type and any type-specific keyword arguments:
-
-```python
-pm = AsyncPersistenceManager()
-
-# SQLite — one database file, multiple named tables
-await pm.configure('users',    type='sqlite', path='data/app.db', table='users')
-await pm.configure('orders',   type='sqlite', path='data/app.db', table='orders')
-
-# In-memory (tests, ephemeral caches)
-await pm.configure('cache', type='in_memory')
-
-# All data ops work immediately after configure()
-await pm.upsert('users', 'u1', {'name': 'Alice'})
-```
-
-Supported types and their kwargs:
-
-| type | kwargs | notes |
-|---|---|---|
-| `sqlite` | `path` (default `':memory:'`), `table` (default `'store'`) | requires `aiosqlite` |
-| `in_memory` | — | no persistence; suitable for tests |
-
-`configure()` is idempotent per name — if the store already exists it is
-replaced. The directory for `path` is created automatically if it does not
-exist.
-
-### Async pipeline (io_chains PersistenceLink)
-
-```python
-import redis.asyncio as aioredis
-from oj_persistence import AsyncRedisStore, AsyncSqlAlchemyStore
-
-# Redis — zero-latency writes in a hot pipeline
-client = aioredis.Redis(host='redis.internal')
-store = AsyncRedisStore(client, prefix='feed:')
-
-async with store:
-    await store.upsert('item:1', {'title': 'Breaking news'})
-
-# PostgreSQL — durable writes via asyncpg
-async with AsyncSqlAlchemyStore('postgresql+asyncpg://user:pass@host/db') as store:
-    await store.upsert('item:1', {'title': 'Breaking news'})
-```
-
 ### File store compression
 
 All file-backed stores (`NdjsonFileStore`, `CsvFileStore`, `FlatFileStore`,
@@ -352,21 +541,7 @@ path = await stream_to_file(source, '/tmp/out.ndjson', debug=True)
 # OJ_PERSISTENCE_DEBUG=1 python my_script.py
 ```
 
-## Relational joins
-
-```python
-ON = lambda user, order: user['id'] == order['user_id']
-
-results = pm.join('users', 'orders', on=ON, how='left',
-                  where=lambda u, o: o['total'] > 100)
-# returns list of (left_val, right_val) tuples; unmatched sides are None
-```
-
-Supported `how` values: `inner` (default), `left`, `right`, `outer`.
-
-> **Note:** joins call `list()` on both stores and perform an O(m × n) nested
-> loop in Python. For large datasets, prefer a query pushed down to the
-> database via `SqlAlchemyStore` or `SqliteStore`.
+---
 
 ## Custom stores
 
@@ -386,8 +561,20 @@ class MyStore(AbstractStore):
 pm.register('custom', MyStore())
 ```
 
+If your store requires a full file rewrite for `upsert`, set the class attribute:
+
+```python
+class MyFileStore(AbstractStore):
+    supports_native_upsert: bool = False
+    ...
+```
+
+The manager will block `upsert()` calls unless `allow_inefficient=True` is passed.
+
 Inherit from `AbstractFileStore` to get `compression` and `from_stream` /
 `from_stream_sync` for free in any file-backed custom store.
+
+---
 
 ## Requirements
 

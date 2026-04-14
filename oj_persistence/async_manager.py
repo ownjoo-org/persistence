@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from typing import Any
+from uuid import uuid4
 
+from oj_persistence.exceptions import UpsertNotSupportedError
+from oj_persistence.refs import GroupRef, StoreRef
+from oj_persistence.relation import Relation
 from oj_persistence.store.async_base import AsyncAbstractStore
 from oj_persistence.utils.join import VALID_JOIN_TYPES, apply_join
+from oj_persistence.utils.relation import apply_relation
 
 
 class AsyncPersistenceManager:
@@ -38,50 +44,132 @@ class AsyncPersistenceManager:
                     instance = super().__new__(cls)
                     instance._stores: dict[str, AsyncAbstractStore] = {}
                     instance._registry_lock = threading.Lock()
+                    # group_id → (GroupRef, conn_kwargs)
+                    instance._groups: dict[str, tuple[GroupRef, dict]] = {}
+                    # store_id → StoreRef (only for stores created via configure/add_table)
+                    instance._store_refs: dict[str, StoreRef] = {}
+                    # group_id → shared resources (e.g. sqlite3.Connection)
+                    instance._group_resources: dict[str, dict] = {}
                     cls._instance = instance
         return cls._instance
 
-    # ------------------------------------------------------------------ configuration
+    # ------------------------------------------------------------------ group API
 
-    async def configure(self, name: str, **store_config) -> None:
+    def create_group(self, store_type: str, group_id: str | None = None, **conn_kwargs) -> GroupRef:
         """
-        Create, initialize, and register a store from keyword config.
+        Declare a backing store group (database file, in-memory namespace, etc.).
 
-        Supported types
-        ---------------
-        sqlite    : path (default ':memory:'), table (default 'store')
-        in_memory : no additional kwargs
+        Parameters
+        ----------
+        store_type   : 'in_memory' | 'sqlite'
+        group_id     : optional name; UUID generated if omitted
+        **conn_kwargs : connection details (path= for sqlite); hidden after this call
 
-        Example
+        Returns
         -------
-            await pm.configure('users', type='sqlite', path='data/app.db', table='users')
-            await pm.configure('cache', type='in_memory')
+        GroupRef — hold this to call add_table() or pass group_id to add_table().
         """
-        from pathlib import Path
-
-        cfg = dict(store_config)
-        store_type = cfg.pop('type')
-
+        if group_id is None:
+            group_id = str(uuid4())
+        ref = GroupRef(group_id=group_id, store_type=store_type)
+        resources: dict = {}
         if store_type == 'sqlite':
-            from oj_persistence.store.async_sqlalchemy_store import AsyncSqlAlchemyStore
-            path = cfg.pop('path', ':memory:')
-            table = cfg.pop('table', 'store')
-            if path != ':memory:':
-                Path(path).parent.mkdir(parents=True, exist_ok=True)
-                url = f'sqlite+aiosqlite:///{path}'
-            else:
-                url = 'sqlite+aiosqlite:///:memory:'
-            store = AsyncSqlAlchemyStore(url, table=table, **cfg)
-            await store.initialize()
-        elif store_type == 'in_memory':
-            from oj_persistence.store.async_in_memory import AsyncInMemoryStore
-            store = AsyncInMemoryStore(**cfg)
-        else:
-            raise ValueError(
-                f"Unknown store type {store_type!r}. Supported: sqlite, in_memory"
-            )
+            import sqlite3
+            path = conn_kwargs.get('path', ':memory:')
+            resources['conn'] = sqlite3.connect(str(path), check_same_thread=False)
+        with self._registry_lock:
+            self._groups[group_id] = (ref, dict(conn_kwargs))
+            self._group_resources[group_id] = resources
+        return ref
 
-        self.register(name, store)
+    async def add_table(
+        self,
+        group_id: str,
+        store_id: str | None = None,
+        table_id: str | None = None,
+    ) -> StoreRef:
+        """
+        Create a table within an existing group and register it.
+
+        Parameters
+        ----------
+        group_id  : must match a previously created group
+        store_id  : name used for CRUDL calls; UUID generated if omitted
+        table_id  : logical table name inside the backing store; UUID if omitted
+
+        Returns
+        -------
+        StoreRef — use store_ref.store_id in all subsequent CRUDL calls.
+        """
+        if group_id not in self._groups:
+            raise KeyError(f"Group '{group_id}' not found. Call create_group() first.")
+        group_ref, conn_kwargs = self._groups[group_id]
+        if store_id is None:
+            store_id = str(uuid4())
+        if table_id is None:
+            table_id = f't_{uuid4().hex}'  # SQL-safe: no hyphens, letter prefix
+        resources = self._group_resources.get(group_id, {})
+        store = await self._instantiate_store(group_ref.store_type, table_id, conn_kwargs, resources)
+        store_ref = StoreRef(
+            store_id=store_id,
+            group_id=group_id,
+            table_id=table_id,
+            store_type=group_ref.store_type,
+        )
+        with self._registry_lock:
+            self._stores[store_id] = store
+            self._store_refs[store_id] = store_ref
+        return store_ref
+
+    async def configure(self, store_type: str, store_id: str | None = None, **kwargs) -> StoreRef:
+        """
+        Convenience: create an implicit group and one table in a single call.
+
+        Use create_group() + add_table() when you need multiple tables sharing
+        the same backing store (e.g. two tables in one SQLite file).
+
+        Returns
+        -------
+        StoreRef — use store_ref.store_id in all subsequent CRUDL calls.
+        """
+        group_id = str(uuid4())
+        self.create_group(store_type=store_type, group_id=group_id, **kwargs)
+        return await self.add_table(group_id=group_id, store_id=store_id)
+
+    def catalog(self) -> dict[str, StoreRef]:
+        """Return a snapshot of all stores registered via configure() or add_table()."""
+        return dict(self._store_refs)
+
+    def group_catalog(self) -> dict[str, GroupRef]:
+        """Return a snapshot of all groups registered via create_group()."""
+        return {gid: ref for gid, (ref, _) in self._groups.items()}
+
+    @staticmethod
+    async def _instantiate_store(
+        store_type: str, table_id: str, conn_kwargs: dict, resources: dict
+    ) -> AsyncAbstractStore:
+        if store_type == 'in_memory':
+            from oj_persistence.store.async_in_memory import AsyncInMemoryStore
+            return AsyncInMemoryStore()
+        if store_type == 'sqlite':
+            import asyncio
+            from oj_persistence.store.async_sqlite import AsyncSqliteStore
+            from oj_persistence.store.sqlite import SqliteStore
+            shared_conn = resources.get('conn')
+            if shared_conn is not None:
+                sync_store = await asyncio.to_thread(
+                    SqliteStore._from_connection, shared_conn, table=table_id
+                )
+            else:
+                path = conn_kwargs.get('path', ':memory:')
+                sync_store = await asyncio.to_thread(SqliteStore, path, table=table_id)
+            # Wrap in AsyncSqliteStore using the already-constructed sync store
+            async_store = AsyncSqliteStore.__new__(AsyncSqliteStore)
+            async_store._store = sync_store
+            return async_store
+        raise ValueError(
+            f"Unknown store type {store_type!r}. Supported: in_memory, sqlite"
+        )
 
     # ------------------------------------------------------------------ registry
 
@@ -129,14 +217,84 @@ class AsyncPersistenceManager:
     async def update(self, store_name: str, key: str, value: Any) -> None:
         await self._get_required(store_name).update(key, value)
 
-    async def upsert(self, store_name: str, key: str, value: Any) -> None:
-        await self._get_required(store_name).upsert(key, value)
+    async def upsert(self, store_name: str, key: str, value: Any, *, allow_inefficient: bool = False) -> None:
+        """
+        Create or overwrite an entry in the named store.
+
+        Raises UpsertNotSupportedError for stores that require a full file
+        rewrite to satisfy the operation (NDJSON, CSV, flat-file stores).
+        Pass allow_inefficient=True to override and accept the performance cost.
+        Prefer create() for new records and update() for existing ones.
+        """
+        store = self._get_required(store_name)
+        if not store.supports_native_upsert and not allow_inefficient:
+            raise UpsertNotSupportedError(
+                f"Store '{store_name}' ({type(store).__name__}) requires a full file rewrite "
+                f"for upsert. Use create() or update() instead, or pass allow_inefficient=True."
+            )
+        await store.upsert(key, value)
 
     async def delete(self, store_name: str, key: str) -> None:
         await self._get_required(store_name).delete(key)
 
     async def list(self, store_name: str, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         return await self._get_required(store_name).list(predicate)
+
+    # ------------------------------------------------------------------ relate
+
+    async def relate(self, relation: Relation) -> list[tuple[Any, Any]]:
+        """
+        Execute a declarative Relation query across two registered stores.
+
+        When both stores belong to the same group and the backing supports
+        native joins (SQLite INNER/LEFT), the query is pushed down to SQL
+        via the underlying sync SqliteStore.  Otherwise falls back to the
+        Python nested-loop path.
+
+        The relation's where filter is always applied in Python after joining.
+        """
+        import asyncio
+
+        left_store  = self._get_required(relation.left_store)
+        right_store = self._get_required(relation.right_store)
+
+        # Same-group native join via the underlying sync SqliteStore
+        left_ref  = self._store_refs.get(relation.left_store)
+        right_ref = self._store_refs.get(relation.right_store)
+        if (
+            left_ref is not None
+            and right_ref is not None
+            and left_ref.group_id == right_ref.group_id
+            and hasattr(left_store, 'sync_store')
+            and hasattr(left_store.sync_store, 'native_join')
+            and relation.how in ('inner', 'left')
+        ):
+            try:
+                pairs = await asyncio.to_thread(
+                    left_store.sync_store.native_join,
+                    right_store.sync_store,
+                    relation.on,
+                    relation.how,
+                    relation.left_fields,
+                    relation.right_fields,
+                )
+                if relation.where is not None:
+                    pairs = [(l, r) for l, r in pairs if r is None or relation.where(l, r)]
+                return pairs
+            except NotImplementedError:
+                pass  # fall through to Python path
+
+        # Python path: fetch both sides and join in memory
+        left_vals  = await left_store.list()
+        right_vals = await right_store.list()
+        return apply_relation(
+            left_vals, right_vals,
+            on=relation.on,
+            how=relation.how,
+            left_fields=relation.left_fields,
+            right_fields=relation.right_fields,
+            where=relation.where,
+        )
 
     # ------------------------------------------------------------------ join
 
@@ -168,6 +326,26 @@ class AsyncPersistenceManager:
         left_vals = await self._get_required(left).list()
         right_vals = await self._get_required(right).list()
         return apply_join(left_vals, right_vals, on, how, where)
+
+    # ------------------------------------------------------------------ store_context
+
+    @asynccontextmanager
+    async def store_context(self, store_id: str):
+        """
+        Async context manager that enters the named store's lifecycle context.
+
+        Guarantees any buffered writes (e.g. AsyncNdjsonFileStore) are flushed
+        on exit. The store reference is not exposed to the caller — all data
+        operations continue through the manager's CRUDL methods.
+
+        Use this when running a pipeline that writes to a store and needs the
+        flush guarantee (e.g. wrapping PersistenceLink.run()).
+
+        Raises KeyError if store_id is not registered.
+        """
+        store = self._get_required(store_id)
+        async with store:
+            yield
 
     # ------------------------------------------------------------------ list_by_field
 

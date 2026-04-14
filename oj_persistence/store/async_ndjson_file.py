@@ -18,6 +18,8 @@ class AsyncNdjsonFileStore(AsyncAbstractStore):
     or external database durability, prefer AsyncSqliteStore or
     AsyncSqlAlchemyStore.
 
+    upsert() requires a full file rewrite; prefer create() for new records.
+
     Writes are accumulated in memory and flushed to disk in two situations:
 
     1. **Size trigger**: the buffer reaches ``batch_size`` items — flush fires
@@ -38,6 +40,8 @@ class AsyncNdjsonFileStore(AsyncAbstractStore):
     so it can be registered in a :class:`PersistenceManager` for sync joins after
     the async pipeline has finished.
     """
+
+    supports_native_upsert: bool = False
 
     def __init__(
         self,

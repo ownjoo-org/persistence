@@ -43,3 +43,18 @@ class AbstractStore(ABC):
     @abstractmethod
     def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         """Return all values, or only those for which predicate(value) is True."""
+
+    @property
+    def supports_native_upsert(self) -> bool:
+        """
+        True when upsert() is implemented as an atomic or native operation
+        (dict assignment, SQL INSERT OR REPLACE, Redis SET, etc.).
+
+        False when upsert() requires a full file rewrite to locate and replace
+        an existing record (NDJSON, CSV, flat-file stores).  The manager blocks
+        upsert() on False stores unless allow_inefficient=True is passed.
+
+        Subclasses that need a full rewrite must override this to return False.
+        VersionedStore delegates to its inner store.
+        """
+        return True
