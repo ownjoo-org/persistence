@@ -62,6 +62,10 @@ class AsyncSqliteStore(AsyncAbstractStore):
     async def list(self, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
         return await asyncio.to_thread(self._store.list, predicate)
 
+    async def list_page(self, offset: int, limit: int) -> list[Any]:
+        """Return up to limit values starting at offset without loading the full table."""
+        return await asyncio.to_thread(self._store.list_page, offset, limit)
+
     async def list_by_field(self, json_path: str, value: Any) -> list[Any]:
         """Async equivalent of SqliteStore.list_by_field()."""
         return await asyncio.to_thread(self._store.list_by_field, json_path, value)

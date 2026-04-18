@@ -61,7 +61,7 @@ class AsyncPersistenceManager:
 
         Parameters
         ----------
-        store_type   : 'in_memory' | 'sqlite'
+        store_type   : 'in_memory' | 'sqlite' | 'ndjson'
         group_id     : optional name; UUID generated if omitted
         **conn_kwargs : connection details (path= for sqlite); hidden after this call
 
@@ -167,8 +167,12 @@ class AsyncPersistenceManager:
             async_store = AsyncSqliteStore.__new__(AsyncSqliteStore)
             async_store._store = sync_store
             return async_store
+        if store_type == 'ndjson':
+            from oj_persistence.store.async_ndjson_file import AsyncNdjsonFileStore
+            path = conn_kwargs.get('path', f'/tmp/{table_id}.ndjson')
+            return AsyncNdjsonFileStore(path=path)
         raise ValueError(
-            f"Unknown store type {store_type!r}. Supported: in_memory, sqlite"
+            f"Unknown store type {store_type!r}. Supported: in_memory, sqlite, ndjson"
         )
 
     # ------------------------------------------------------------------ registry
@@ -348,6 +352,20 @@ class AsyncPersistenceManager:
             yield
 
     # ------------------------------------------------------------------ list_by_field
+
+    async def list_page(self, store_name: str, offset: int, limit: int) -> list[Any]:
+        """
+        Return up to limit values starting at offset, pushing LIMIT/OFFSET to SQL.
+
+        Raises NotImplementedError for stores that do not support list_page().
+        """
+        store = self._get_required(store_name)
+        if not hasattr(store, 'list_page'):
+            raise NotImplementedError(
+                f"Store '{store_name}' ({type(store).__name__}) does not support list_page(). "
+                "Use a SQL-backed store (AsyncSqliteStore) instead."
+            )
+        return await store.list_page(offset, limit)
 
     async def list_by_field(self, store_name: str, json_path: str, value: Any) -> list[Any]:
         """

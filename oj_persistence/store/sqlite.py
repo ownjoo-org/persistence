@@ -168,6 +168,15 @@ class SqliteStore(AbstractStore):
             self._conn.execute(sql)
             self._conn.commit()
 
+    def list_page(self, offset: int, limit: int) -> list[Any]:
+        """Return up to limit values starting at offset, ordered by insertion key."""
+        with self._lock:
+            rows = self._conn.execute(
+                f'SELECT value FROM {self._table} ORDER BY key LIMIT ? OFFSET ?',
+                (limit, offset),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def list_by_field(self, json_path: str, value: Any) -> list[Any]:
         """
         Return all values where the JSON field at json_path equals value.
