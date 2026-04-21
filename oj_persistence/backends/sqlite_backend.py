@@ -33,15 +33,25 @@ from typing import Any
 
 from ..base import Backend, Capability
 
-_SAFE_NAME = re.compile(r'^\w+$')
+# Allow hyphens in addition to [A-Za-z0-9_] since pipeline / table names often
+# contain them (e.g. 'rick-and-morty-staged__results'). All SQL references to
+# a table name are double-quoted so hyphenated identifiers are valid SQL.
+_SAFE_NAME = re.compile(r'^[\w-]+$')
 _SAFE_JSON_PATH = re.compile(r'^[\$\.\w\[\]]+$')
 
 
 def _check_name(name: str, kind: str = 'table') -> None:
     if not _SAFE_NAME.match(name):
         raise ValueError(
-            f'invalid {kind} name {name!r} — only letters, digits, underscores allowed'
+            f'invalid {kind} name {name!r} — only letters, digits, underscores, hyphens allowed'
         )
+
+
+def _q(name: str) -> str:
+    """Quote a safe identifier for SQL. ``name`` must have already passed
+    ``_check_name`` so embedding is injection-free; double-quoting then just
+    lets hyphenated names parse correctly."""
+    return f'"{name}"'
 
 
 class SqliteBackend(Backend):
@@ -112,20 +122,23 @@ class SqliteBackend(Backend):
 
     async def acreate_table(self, table: str) -> None:
         _check_name(table)
+        t = _q(table)
         await asyncio.to_thread(self._write, lambda c: (
             c.execute(
-                f'CREATE TABLE IF NOT EXISTS {table} '
+                f'CREATE TABLE IF NOT EXISTS {t} '
                 f'(key TEXT PRIMARY KEY, value TEXT NOT NULL)'
             )
         ))
 
     async def adrop_table(self, table: str) -> None:
         _check_name(table)
-        await asyncio.to_thread(self._write, lambda c: c.execute(f'DROP TABLE IF EXISTS {table}'))
+        t = _q(table)
+        await asyncio.to_thread(self._write, lambda c: c.execute(f'DROP TABLE IF EXISTS {t}'))
 
     async def atruncate_table(self, table: str) -> None:
         _check_name(table)
-        await asyncio.to_thread(self._write, lambda c: c.execute(f'DELETE FROM {table}'))
+        t = _q(table)
+        await asyncio.to_thread(self._write, lambda c: c.execute(f'DELETE FROM {t}'))
 
     async def atable_exists(self, table: str) -> bool:
         _check_name(table)
@@ -141,27 +154,30 @@ class SqliteBackend(Backend):
 
     async def acreate(self, table: str, key: str, value: Any) -> None:
         _check_name(table)
+        t = _q(table)
         payload = json.dumps(value)
         def _op(c: sqlite3.Connection) -> None:
             try:
-                c.execute(f'INSERT INTO {table} (key, value) VALUES (?, ?)', (key, payload))
+                c.execute(f'INSERT INTO {t} (key, value) VALUES (?, ?)', (key, payload))
             except sqlite3.IntegrityError:
                 raise KeyError(key)
         await asyncio.to_thread(self._write, _op)
 
     async def aread(self, table: str, key: str) -> Any | None:
         _check_name(table)
+        t = _q(table)
         def _op(c: sqlite3.Connection) -> Any | None:
-            row = c.execute(f'SELECT value FROM {table} WHERE key = ?', (key,)).fetchone()
+            row = c.execute(f'SELECT value FROM {t} WHERE key = ?', (key,)).fetchone()
             return json.loads(row[0]) if row else None
         return await asyncio.to_thread(self._read, _op)
 
     async def aupdate(self, table: str, key: str, value: Any) -> None:
         _check_name(table)
+        t = _q(table)
         payload = json.dumps(value)
         def _op(c: sqlite3.Connection) -> None:
             cursor = c.execute(
-                f'UPDATE {table} SET value = ? WHERE key = ?',
+                f'UPDATE {t} SET value = ? WHERE key = ?',
                 (payload, key),
             )
             if cursor.rowcount == 0:
@@ -170,10 +186,11 @@ class SqliteBackend(Backend):
 
     async def aupsert(self, table: str, key: str, value: Any) -> None:
         _check_name(table)
+        t = _q(table)
         payload = json.dumps(value)
         def _op(c: sqlite3.Connection) -> None:
             c.execute(
-                f'INSERT INTO {table} (key, value) VALUES (?, ?) '
+                f'INSERT INTO {t} (key, value) VALUES (?, ?) '
                 f'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
                 (key, payload),
             )
@@ -181,9 +198,10 @@ class SqliteBackend(Backend):
 
     async def adelete(self, table: str, key: str) -> None:
         _check_name(table)
+        t = _q(table)
         await asyncio.to_thread(
             self._write,
-            lambda c: c.execute(f'DELETE FROM {table} WHERE key = ?', (key,)),
+            lambda c: c.execute(f'DELETE FROM {t} WHERE key = ?', (key,)),
         )
 
     async def alist(
@@ -192,8 +210,9 @@ class SqliteBackend(Backend):
         predicate: Callable[[Any], bool] | None = None,
     ) -> list[Any]:
         _check_name(table)
+        t = _q(table)
         def _op(c: sqlite3.Connection) -> list[Any]:
-            rows = c.execute(f'SELECT value FROM {table}').fetchall()
+            rows = c.execute(f'SELECT value FROM {t}').fetchall()
             values = [json.loads(r[0]) for r in rows]
             if predicate is None:
                 return values
@@ -216,9 +235,10 @@ class SqliteBackend(Backend):
 
     async def alist_page(self, table: str, offset: int, limit: int) -> list[Any]:
         _check_name(table)
+        t = _q(table)
         def _op(c: sqlite3.Connection) -> list[Any]:
             rows = c.execute(
-                f'SELECT value FROM {table} ORDER BY key LIMIT ? OFFSET ?',
+                f'SELECT value FROM {t} ORDER BY key LIMIT ? OFFSET ?',
                 (limit, offset),
             ).fetchall()
             return [json.loads(r[0]) for r in rows]
@@ -228,9 +248,10 @@ class SqliteBackend(Backend):
         _check_name(table)
         if not _SAFE_JSON_PATH.match(json_path):
             raise ValueError(f'unsafe json_path {json_path!r}')
+        t = _q(table)
         def _op(c: sqlite3.Connection) -> list[Any]:
             sql = (
-                f"SELECT value FROM {table} "
+                f"SELECT value FROM {t} "
                 f"WHERE json_extract(value, '{json_path}') = ?"
             )
             rows = c.execute(sql, (value,)).fetchall()
@@ -243,10 +264,11 @@ class SqliteBackend(Backend):
             raise ValueError(f'unsafe json_path {json_path!r}')
         idx_name = name or 'idx_' + re.sub(r'\W', '_', json_path.lstrip('$').lstrip('.'))
         _check_name(idx_name, kind='index')
-        # JSON path safe-regex already applied; quoted separately from SQL literal.
+        t = _q(table)
+        i = _q(idx_name)
         sql = (
-            f'CREATE INDEX IF NOT EXISTS {idx_name} '
-            f"ON {table}(json_extract(value, '{json_path}'))"
+            f'CREATE INDEX IF NOT EXISTS {i} '
+            f"ON {t}(json_extract(value, '{json_path}'))"
         )
         await asyncio.to_thread(self._write, lambda c: c.execute(sql))
 
