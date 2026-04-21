@@ -90,7 +90,12 @@ class SqliteBackend(Backend):
             self._writer.execute('PRAGMA synchronous=NORMAL')  # WAL-safe, faster than FULL
 
             for _ in range(self._pool_size):
-                conn = sqlite3.connect(self._path, check_same_thread=False)
+                # isolation_level=None keeps reader connections in autocommit
+                # mode so every SELECT takes a fresh snapshot (WAL semantics).
+                # With the default deferred isolation, a reader that was
+                # created before any writes and never commit/rollback'd would
+                # stay pinned to its initial empty snapshot forever.
+                conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
                 conn.execute('PRAGMA busy_timeout=5000')
                 self._reader_pool.put(conn)
             self._opened = True
