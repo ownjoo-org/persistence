@@ -1,297 +1,432 @@
+"""The Manager — only public entry point into the library.
+
+PROPOSAL — not wired into the package yet. See ./README.md for context.
+
+Consumers hand tables to the Manager via ``register(name, spec)`` and then talk
+to the Manager about those tables by name. They never see a store, connection,
+handle, or any backend internal. Sync and async methods are equally first-class
+— async uses the ``a`` prefix (Python idiom).
+
+File-safety invariant
+---------------------
+Per-file coordination (sqlite connection pool, writer lock, WAL mode) is
+enforced **below** the Manager layer, in a process-scoped ``_BackendRegistry``
+singleton. Any number of ``Manager`` instances can coexist — they each have
+their own table-name namespace — but if two of them register ``Sqlite(path=X)``
+they get the **same** ``SqliteBackend`` object, and therefore the same
+connection pool, writer lock, and WAL configuration. There is no way for two
+Managers to race on a file.
+"""
+
 from __future__ import annotations
 
+import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
-from uuid import uuid4
 
-from oj_persistence.exceptions import UpsertNotSupportedError
-from oj_persistence.refs import GroupRef, StoreRef
-from oj_persistence.relation import Relation
-from oj_persistence.store.base import AbstractStore
-from oj_persistence.utils.join import VALID_JOIN_TYPES, apply_join
-from oj_persistence.utils.relation import apply_relation
+from .base import (
+    Backend,
+    BackendSpec,
+    Capability,
+    InMemory,
+    Ndjson,
+    Redis,
+    Sqlite,
+    SqlAlchemy,
+    TableAlreadyRegistered,
+    TableNotRegistered,
+    TinyDb,
+    UnsupportedOperation,
+)
 
 
-class PersistenceManager:
+# ------------------------------------------------------------------ backend registry
+#
+# Process-scoped. Guarantees one Backend per connection target, regardless of
+# how many Manager instances exist. This is where file-level coordination lives.
+
+class _BackendRegistry:
+    """Thread-safe, reference-counted registry of Backend instances.
+
+    Not part of the public API. Each ``Manager`` delegates backend acquisition
+    to the single module-level ``_BACKENDS`` instance.
     """
-    Singleton registry of named AbstractStore instances.
 
-    One instance per process — all threads share the same registry.
-    Thread safety is guaranteed by a class-level lock during construction
-    and an instance-level lock for registry mutations.
+    def __init__(self) -> None:
+        self._backends: dict[tuple, Backend] = {}
+        self._refcounts: dict[tuple, int] = {}
+        self._lock = threading.RLock()
 
-    Correct usage — all data operations go through the manager:
+    def acquire(self, spec: BackendSpec) -> tuple[Backend, bool]:
+        """Return ``(backend, created)`` for ``spec``. Constructs a new backend
+        if no other Manager has one registered for this connection target.
+        Increments the refcount either way. Caller is responsible for calling
+        ``release(spec)`` exactly once per ``acquire()``.
+        """
+        key = _dedup_key(spec)
+        with self._lock:
+            backend = self._backends.get(key)
+            created = False
+            if backend is None:
+                backend = _construct_backend(spec)
+                self._backends[key] = backend
+                self._refcounts[key] = 0
+                created = True
+            self._refcounts[key] += 1
+            return backend, created
 
-        pm = PersistenceManager()
-        pm.get_or_create('users', lambda: SqliteStore('users.db'))  # register once
+    def release(self, spec: BackendSpec) -> Backend | None:
+        """Decrement the refcount. Returns the backend if this was the last
+        reference (caller must then ``await backend.aclose()``). Returns
+        ``None`` otherwise.
+        """
+        key = _dedup_key(spec)
+        with self._lock:
+            if self._refcounts.get(key, 0) <= 0:
+                return None
+            self._refcounts[key] -= 1
+            if self._refcounts[key] == 0:
+                backend = self._backends.pop(key)
+                self._refcounts.pop(key, None)
+                return backend
+            return None
+
+    def snapshot(self) -> dict[tuple, int]:
+        """Testing/introspection: current refcounts."""
+        with self._lock:
+            return dict(self._refcounts)
+
+
+_BACKENDS = _BackendRegistry()
+
+
+def _dedup_key(spec: BackendSpec) -> tuple:
+    """Spec → hashable key used for backend dedup.
+
+    The rule: two specs share a backend iff their connection target is
+    identical. For path-based backends (Sqlite, Ndjson, TinyDb) that's the
+    type + path. For Redis it's the url + db. For InMemory it's a per-spec
+    identity (each ``InMemory()`` gets its own backend — they don't share).
+    """
+    if isinstance(spec, InMemory):
+        return ('in_memory', id(spec))
+    if isinstance(spec, Sqlite):
+        return ('sqlite', str(spec.path))
+    if isinstance(spec, Ndjson):
+        return ('ndjson', str(spec.path))
+    if isinstance(spec, TinyDb):
+        return ('tinydb', str(spec.path))
+    if isinstance(spec, Redis):
+        return ('redis', spec.url, spec.db)
+    if isinstance(spec, SqlAlchemy):
+        return ('sqlalchemy', spec.url)
+    raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
+
+
+def _construct_backend(spec: BackendSpec) -> Backend:
+    """Spec → concrete Backend instance. Backends import their own modules
+    lazily so users can install subset extras without importing everything."""
+    if isinstance(spec, Sqlite):
+        from .backends.sqlite_backend import SqliteBackend
+        return SqliteBackend(path=str(spec.path), pool_size=spec.pool_size)
+    if isinstance(spec, InMemory):
+        from .backends.in_memory_backend import InMemoryBackend
+        return InMemoryBackend()
+    if isinstance(spec, (Ndjson, Redis, SqlAlchemy, TinyDb)):
+        raise NotImplementedError(
+            f'{type(spec).__name__} backend not yet ported to v2. '
+            f'Sqlite + InMemory ship first; others follow in a later pass.'
+        )
+    raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
+
+# Intentional: keep these import-visible here so callers don't have to reach
+# into `base` for spec classes; the Manager re-exports them alongside itself.
+__all__ = [
+    'Manager',
+    'Sqlite', 'InMemory', 'Ndjson', 'Redis', 'SqlAlchemy', 'TinyDb',
+    'Capability',
+    'TableAlreadyRegistered', 'TableNotRegistered', 'UnsupportedOperation',
+]
+
+
+class Manager:
+    """Owner of every backing resource it knows about.
+
+    Typical use::
+
+        from oj_persistence import Manager, Sqlite, InMemory
+
+        pm = Manager()
+        pm.register('users', Sqlite(path='data/app.db'))
+        pm.register('orders', Sqlite(path='data/app.db'))   # shares conn with users
+        pm.register('cache', InMemory())
+
         pm.create('users', 'u1', {'name': 'Alice'})
-        pm.read('users', 'u1')
-        pm.update('users', 'u1', {'name': 'Bob'})
-        pm.upsert('users', 'u1', {'name': 'Charlie'})
-        pm.delete('users', 'u1')
-        pm.list('users')
-        pm.join('users', 'orders', on=lambda u, o: u['id'] == o['user_id'])
+        await pm.aread('users', 'u1')
 
-    Stores are thread-safe independently (RWLock), but the correct usage model
-    is that threads share only the manager singleton — they never hold a
-    reference to a store and call its methods directly.
+        pm.close()   # or await pm.aclose()
+
+    Concurrency: see ./README.md. Short version: sqlite runs in WAL mode with
+    a reader pool and a single writer; reads never block writes; writes never
+    block reads; cross-table reads in the same file are concurrent.
+
+    Instance independence: construct multiple ``Manager()`` instances freely
+    (one per test, one per tenant, or whatever fits). Each has its own
+    table-name namespace. The file-level coordination is still enforced — the
+    process-scoped ``_BACKENDS`` registry ensures that two ``Sqlite(path=X)``
+    registrations (from the same Manager or different Managers) share exactly
+    one underlying ``SqliteBackend``.
     """
 
-    _instance: PersistenceManager | None = None
-    _init_lock: threading.Lock = threading.Lock()
+    # ------------------------------------------------------------------ init
 
-    def __new__(cls) -> PersistenceManager:
-        if cls._instance is None:
-            with cls._init_lock:
-                if cls._instance is None:
-                    instance = super().__new__(cls)
-                    instance._stores: dict[str, AbstractStore] = {}
-                    instance._registry_lock = threading.Lock()
-                    # group_id → (GroupRef, conn_kwargs)
-                    instance._groups: dict[str, tuple[GroupRef, dict]] = {}
-                    # store_id → StoreRef (only for stores created via configure/add_table)
-                    instance._store_refs: dict[str, StoreRef] = {}
-                    # group_id → shared resources (e.g. sqlite3.Connection)
-                    instance._group_resources: dict[str, dict] = {}
-                    cls._instance = instance
-        return cls._instance
+    def __init__(self) -> None:
+        # table name → backend instance that owns it (looked up from _BACKENDS)
+        self._tables: dict[str, Backend] = {}
+        # table name → spec used to register it (needed for release() on drop)
+        self._specs: dict[str, BackendSpec] = {}
+        # table name → set of capabilities declared required by the caller
+        self._required_capabilities: dict[str, frozenset[Capability]] = {}
+        self._state_lock = threading.RLock()
+        # Background event loop for sync → async bridging. Started lazily.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
 
-    # ------------------------------------------------------------------ group API
+    # ------------------------------------------------------------------ registration
 
-    def create_group(self, store_type: str, group_id: str | None = None, **conn_kwargs) -> GroupRef:
-        """
-        Declare a backing store group (database file, in-memory namespace, etc.).
-
-        Parameters
-        ----------
-        store_type  : 'in_memory' | 'sqlite'
-        group_id    : optional name; UUID generated if omitted
-        **conn_kwargs : connection details (path= for sqlite); hidden from callers after this call
-
-        Returns
-        -------
-        GroupRef — hold this to call add_table() or pass group_id to add_table().
-        """
-        if group_id is None:
-            group_id = str(uuid4())
-        ref = GroupRef(group_id=group_id, store_type=store_type)
-        resources: dict = {}
-        if store_type == 'sqlite':
-            import sqlite3
-            path = conn_kwargs.get('path', ':memory:')
-            resources['conn'] = sqlite3.connect(str(path), check_same_thread=False)
-        with self._registry_lock:
-            self._groups[group_id] = (ref, dict(conn_kwargs))
-            self._group_resources[group_id] = resources
-        return ref
-
-    def add_table(
+    def register(
         self,
-        group_id: str,
-        store_id: str | None = None,
-        table_id: str | None = None,
-    ) -> StoreRef:
+        table: str,
+        spec: BackendSpec,
+        *,
+        requires: frozenset[Capability] | None = None,
+        replace: bool = False,
+    ) -> None:
+        """Register a table to live in the backend described by ``spec``.
+
+        ``requires`` lets the caller declare up-front which capabilities they
+        plan to use (e.g. ``frozenset({Capability.PAGINATION})``). If the
+        chosen backend doesn't support them, ``register`` raises
+        ``UnsupportedOperation`` immediately — not later at the call site.
+
+        Raises ``TableAlreadyRegistered`` if ``table`` is already known, unless
+        ``replace=True``, in which case the existing table is dropped first
+        (data lost; connection closed if it was the last reference).
         """
-        Create a table within an existing group and register it.
+        self._run_sync(self.aregister(table, spec, requires=requires, replace=replace))
 
-        Parameters
-        ----------
-        group_id  : must match a previously created group
-        store_id  : name used for CRUDL calls; UUID generated if omitted
-        table_id  : logical table name inside the backing store; UUID if omitted
+    async def aregister(
+        self,
+        table: str,
+        spec: BackendSpec,
+        *,
+        requires: frozenset[Capability] | None = None,
+        replace: bool = False,
+    ) -> None:
+        with self._state_lock:
+            if table in self._tables:
+                if not replace:
+                    raise TableAlreadyRegistered(table)
+                await self._drop_locked(table)
 
-        Returns
-        -------
-        StoreRef — use store_ref.store_id in all subsequent CRUDL calls.
-        """
-        if group_id not in self._groups:
-            raise KeyError(f"Group '{group_id}' not found. Call create_group() first.")
-        group_ref, conn_kwargs = self._groups[group_id]
-        if store_id is None:
-            store_id = str(uuid4())
-        if table_id is None:
-            table_id = f't_{uuid4().hex}'  # SQL-safe: no hyphens, letter prefix
-        resources = self._group_resources.get(group_id, {})
-        store = self._instantiate_store(group_ref.store_type, table_id, conn_kwargs, resources)
-        store_ref = StoreRef(
-            store_id=store_id,
-            group_id=group_id,
-            table_id=table_id,
-            store_type=group_ref.store_type,
-        )
-        with self._registry_lock:
-            self._stores[store_id] = store
-            self._store_refs[store_id] = store_ref
-        return store_ref
-
-    def configure(self, store_type: str, store_id: str | None = None, **kwargs) -> StoreRef:
-        """
-        Convenience: create an implicit group and one table in a single call.
-
-        Use create_group() + add_table() when you need multiple tables sharing
-        the same backing store (e.g. two tables in one SQLite file).
-
-        Returns
-        -------
-        StoreRef — use store_ref.store_id in all subsequent CRUDL calls.
-        """
-        group_id = str(uuid4())
-        self.create_group(store_type=store_type, group_id=group_id, **kwargs)
-        return self.add_table(group_id=group_id, store_id=store_id)
-
-    def catalog(self) -> dict[str, StoreRef]:
-        """Return a snapshot of all stores registered via configure() or add_table()."""
-        return dict(self._store_refs)
-
-    def group_catalog(self) -> dict[str, GroupRef]:
-        """Return a snapshot of all groups registered via create_group()."""
-        return {gid: ref for gid, (ref, _) in self._groups.items()}
-
-    @staticmethod
-    def _instantiate_store(
-        store_type: str, table_id: str, conn_kwargs: dict, resources: dict
-    ) -> AbstractStore:
-        if store_type == 'in_memory':
-            from oj_persistence.store.in_memory import InMemoryStore
-            return InMemoryStore()
-        if store_type == 'sqlite':
-            from oj_persistence.store.sqlite import SqliteStore
-            shared_conn = resources.get('conn')
-            if shared_conn is not None:
-                return SqliteStore._from_connection(shared_conn, table=table_id)
-            path = conn_kwargs.get('path', ':memory:')
-            return SqliteStore(path, table=table_id)
-        raise ValueError(
-            f"Unknown store type {store_type!r}. Supported: in_memory, sqlite"
-        )
-
-    def get_or_create(self, name: str, factory: Callable[[], AbstractStore]) -> AbstractStore:
-        """
-        Return the store registered under name, creating it via factory if absent.
-
-        The factory is called at most once per name. Subsequent calls with the
-        same name return the existing store regardless of the factory provided.
-        Thread-safe: factory is never called concurrently for the same name.
-        """
-        store = self._stores.get(name)
-        if store is None:
-            with self._registry_lock:
-                store = self._stores.get(name)
-                if store is None:
-                    store = factory()
-                    self._stores[name] = store
-        return store
-
-    def register(self, name: str, store: AbstractStore) -> None:
-        """Register a store under name, replacing any existing entry."""
-        with self._registry_lock:
-            self._stores[name] = store
-
-    def get_store(self, name: str) -> AbstractStore | None:
-        """Return the store registered under name, or None."""
-        return self._stores.get(name)
-
-    def unregister(self, name: str) -> None:
-        """Remove the store registered under name. No-op if not found."""
-        with self._registry_lock:
-            self._stores.pop(name, None)
-
-    # ------------------------------------------------------------------
-    # CRUDL — the primary data interface for callers
-    # ------------------------------------------------------------------
-
-    def _get_required(self, name: str) -> AbstractStore:
-        store = self._stores.get(name)
-        if store is None:
-            raise KeyError(name)
-        return store
-
-    def create(self, store_name: str, key: str, value: Any) -> None:
-        """Create a new entry in the named store. Raises KeyError if store or key already exists."""
-        self._get_required(store_name).create(key, value)
-
-    def read(self, store_name: str, key: str) -> Any:
-        """Return the value for key from the named store, or None if not found."""
-        return self._get_required(store_name).read(key)
-
-    def update(self, store_name: str, key: str, value: Any) -> None:
-        """Update an existing entry. Raises KeyError if store or key not found."""
-        self._get_required(store_name).update(key, value)
-
-    def upsert(self, store_name: str, key: str, value: Any, *, allow_inefficient: bool = False) -> None:
-        """
-        Create or overwrite an entry in the named store.
-
-        Raises UpsertNotSupportedError for stores that require a full file
-        rewrite to satisfy the operation (NDJSON, CSV, flat-file stores).
-        Pass allow_inefficient=True to override and accept the performance cost.
-        Prefer create() for new records and update() for existing ones.
-        """
-        store = self._get_required(store_name)
-        if not store.supports_native_upsert and not allow_inefficient:
-            raise UpsertNotSupportedError(
-                f"Store '{store_name}' ({type(store).__name__}) requires a full file rewrite "
-                f"for upsert. Use create() or update() instead, or pass allow_inefficient=True."
-            )
-        store.upsert(key, value)
-
-    def delete(self, store_name: str, key: str) -> None:
-        """Remove an entry from the named store. No-op if key not found."""
-        self._get_required(store_name).delete(key)
-
-    def list(self, store_name: str, predicate: Callable[[Any], bool] | None = None) -> list[Any]:
-        """Return all values from the named store, optionally filtered by predicate."""
-        return self._get_required(store_name).list(predicate)
-
-    def relate(self, relation: Relation) -> list[tuple[Any, Any]]:
-        """
-        Execute a declarative Relation query across two registered stores.
-
-        When both stores belong to the same group and the backing supports
-        native joins (SQLite INNER/LEFT), the query is pushed down to SQL.
-        Otherwise falls back to the Python nested-loop path.
-
-        The relation's where filter is always applied in Python after joining.
-        """
-        left_store  = self._get_required(relation.left_store)
-        right_store = self._get_required(relation.right_store)
-
-        # Same-group native join: delegate to the left store if supported
-        left_ref  = self._store_refs.get(relation.left_store)
-        right_ref = self._store_refs.get(relation.right_store)
-        if (
-            left_ref is not None
-            and right_ref is not None
-            and left_ref.group_id == right_ref.group_id
-            and hasattr(left_store, 'native_join')
-            and relation.how in ('inner', 'left')
-        ):
-            try:
-                pairs = left_store.native_join(
-                    right_store,
-                    on=relation.on,
-                    how=relation.how,
-                    left_fields=relation.left_fields,
-                    right_fields=relation.right_fields,
+            backend, created = _BACKENDS.acquire(spec)
+            caps_required = requires or frozenset()
+            missing = caps_required - backend.capabilities
+            if missing:
+                released = _BACKENDS.release(spec)
+                if released is not None:
+                    await released.aclose()
+                raise UnsupportedOperation(
+                    f"table {table!r}: backend {type(backend).__name__} is missing "
+                    f"required capabilities {sorted(c.value for c in missing)}"
                 )
-                if relation.where is not None:
-                    pairs = [(l, r) for l, r in pairs if r is None or relation.where(l, r)]
-                return pairs
+
+            self._tables[table] = backend
+            self._specs[table] = spec
+            self._required_capabilities[table] = caps_required
+
+        # Backend-side work (open on first use, create the table) happens
+        # outside the state lock so I/O doesn't block other Manager methods.
+        if created:
+            await backend.aopen()
+        await backend.acreate_table(table)
+
+    # ------------------------------------------------------------------ inspection
+
+    def tables(self) -> list[str]:
+        """All registered table names, in registration order."""
+        with self._state_lock:
+            return list(self._tables)
+
+    def exists(self, table: str) -> bool:
+        with self._state_lock:
+            return table in self._tables
+
+    def capabilities(self, table: str) -> frozenset[Capability]:
+        """Capabilities of the backend holding ``table``."""
+        return self._backend(table).capabilities
+
+    # ------------------------------------------------------------------ management
+
+    def drop(self, table: str) -> None:
+        """Delete ``table``'s data and unregister it. Closes the underlying
+        connection if ``table`` was the last user of it."""
+        self._run_sync(self.adrop(table))
+
+    async def adrop(self, table: str) -> None:
+        async with self._async_state_lock():
+            await self._drop_locked(table)
+
+    def truncate(self, table: str) -> None:
+        """Remove all rows from ``table`` but keep it registered."""
+        self._run_sync(self.atruncate(table))
+
+    async def atruncate(self, table: str) -> None:
+        backend = self._backend(table)
+        await backend.atruncate_table(table)
+
+    def close(self) -> None:
+        """Close every backend the Manager has opened. No-op if already closed."""
+        self._run_sync(self.aclose())
+
+    async def aclose(self) -> None:
+        with self._state_lock:
+            specs = list(self._specs.values())
+            self._tables.clear()
+            self._specs.clear()
+            self._required_capabilities.clear()
+        # Release one refcount per registered table. If we were the last user
+        # of a backend, close it. Other Managers still referencing the same
+        # backend keep it alive.
+        to_close: list[Backend] = []
+        for spec in specs:
+            released = _BACKENDS.release(spec)
+            if released is not None:
+                to_close.append(released)
+        for backend in to_close:
+            await backend.aclose()
+
+    # ------------------------------------------------------------------ CRUDL (async)
+
+    async def acreate(self, table: str, key: str, value: Any) -> None:
+        await self._backend(table).acreate(table, key, value)
+
+    async def aread(self, table: str, key: str) -> Any | None:
+        return await self._backend(table).aread(table, key)
+
+    async def aupdate(self, table: str, key: str, value: Any) -> None:
+        await self._backend(table).aupdate(table, key, value)
+
+    async def aupsert(self, table: str, key: str, value: Any) -> None:
+        await self._backend(table).aupsert(table, key, value)
+
+    async def adelete(self, table: str, key: str) -> None:
+        await self._backend(table).adelete(table, key)
+
+    async def alist(
+        self,
+        table: str,
+        predicate: Callable[[Any], bool] | None = None,
+    ) -> list[Any]:
+        return await self._backend(table).alist(table, predicate)
+
+    async def aiter(
+        self,
+        table: str,
+        predicate: Callable[[Any], bool] | None = None,
+    ) -> AsyncIterator[Any]:
+        async for value in self._backend(table).aiter(table, predicate):
+            yield value
+
+    # ------------------------------------------------------------------ CRUDL (sync)
+
+    def create(self, table: str, key: str, value: Any) -> None:
+        self._run_sync(self.acreate(table, key, value))
+
+    def read(self, table: str, key: str) -> Any | None:
+        return self._run_sync(self.aread(table, key))
+
+    def update(self, table: str, key: str, value: Any) -> None:
+        self._run_sync(self.aupdate(table, key, value))
+
+    def upsert(self, table: str, key: str, value: Any) -> None:
+        self._run_sync(self.aupsert(table, key, value))
+
+    def delete(self, table: str, key: str) -> None:
+        self._run_sync(self.adelete(table, key))
+
+    def list(
+        self,
+        table: str,
+        predicate: Callable[[Any], bool] | None = None,
+    ) -> list[Any]:
+        return self._run_sync(self.alist(table, predicate))
+
+    def iter(
+        self,
+        table: str,
+        predicate: Callable[[Any], bool] | None = None,
+    ) -> Iterator[Any]:
+        """Sync generator — yields one value at a time by driving the async
+        iterator through the background loop."""
+        aiter_obj = self._backend(table).aiter(table, predicate)
+        while True:
+            try:
+                yield self._run_sync(aiter_obj.__anext__())
+            except StopAsyncIteration:
+                return
+
+    # ------------------------------------------------------------------ indexed/paginated
+
+    async def alist_page(self, table: str, offset: int, limit: int) -> list[Any]:
+        backend = self._require_capability(table, Capability.PAGINATION)
+        return await backend.alist_page(table, offset, limit)
+
+    def list_page(self, table: str, offset: int, limit: int) -> list[Any]:
+        return self._run_sync(self.alist_page(table, offset, limit))
+
+    async def alist_by_field(self, table: str, json_path: str, value: Any) -> list[Any]:
+        backend = self._require_capability(table, Capability.FIELD_INDEX)
+        return await backend.alist_by_field(table, json_path, value)
+
+    def list_by_field(self, table: str, json_path: str, value: Any) -> list[Any]:
+        return self._run_sync(self.alist_by_field(table, json_path, value))
+
+    async def aadd_index(self, table: str, json_path: str, *, name: str | None = None) -> None:
+        backend = self._require_capability(table, Capability.FIELD_INDEX)
+        await backend.aadd_index(table, json_path, name=name)
+
+    def add_index(self, table: str, json_path: str, *, name: str | None = None) -> None:
+        self._run_sync(self.aadd_index(table, json_path, name=name))
+
+    # ------------------------------------------------------------------ joins / relations
+
+    async def ajoin(
+        self,
+        left: str,
+        right: str,
+        on: Callable[[Any, Any], bool],
+        how: str = 'inner',
+        where: Callable[[Any, Any], bool] | None = None,
+    ) -> list[tuple[Any, Any]]:
+        """Join two tables. When both share the same backend instance AND that
+        backend declares ``Capability.NATIVE_JOIN``, the Manager pushes the join
+        into the backend (SQL JOIN for SQLite). Otherwise falls back to an
+        in-Python nested loop."""
+        left_backend = self._backend(left)
+        right_backend = self._backend(right)
+        if left_backend is right_backend and Capability.NATIVE_JOIN in left_backend.capabilities:
+            try:
+                return await left_backend.anative_join(left, right, on=on, how=how, where=where)
             except NotImplementedError:
                 pass  # fall through to Python path
-
-        # Python path: fetch both sides and join in memory
-        left_vals  = left_store.list()
-        right_vals = right_store.list()
-        return apply_relation(
-            left_vals, right_vals,
-            on=relation.on,
-            how=relation.how,
-            left_fields=relation.left_fields,
-            right_fields=relation.right_fields,
-            where=relation.where,
-        )
+        # Python path: materialize both sides and pair up. Kept here (not in
+        # Backend) because it's backend-agnostic.
+        from oj_persistence.utils.join import apply_join  # existing util
+        left_vals = await left_backend.alist(left)
+        right_vals = await right_backend.alist(right)
+        return apply_join(left_vals, right_vals, on, how, where)
 
     def join(
         self,
@@ -301,30 +436,89 @@ class PersistenceManager:
         how: str = 'inner',
         where: Callable[[Any, Any], bool] | None = None,
     ) -> list[tuple[Any, Any]]:
+        return self._run_sync(self.ajoin(left, right, on, how=how, where=where))
+
+    # ------------------------------------------------------------------ internals
+
+    def _backend(self, table: str) -> Backend:
+        with self._state_lock:
+            backend = self._tables.get(table)
+        if backend is None:
+            raise TableNotRegistered(table)
+        return backend
+
+    def _require_capability(self, table: str, cap: Capability) -> Backend:
+        backend = self._backend(table)
+        if cap not in backend.capabilities:
+            raise UnsupportedOperation(
+                f"table {table!r}: backend {type(backend).__name__} does not support {cap.value}"
+            )
+        return backend
+
+    async def _drop_locked(self, table: str) -> None:
+        """Drop a table and release its backend refcount. Caller holds _state_lock."""
+        backend = self._tables.pop(table, None)
+        spec = self._specs.pop(table, None)
+        self._required_capabilities.pop(table, None)
+        if backend is None or spec is None:
+            raise TableNotRegistered(table)
+        await backend.adrop_table(table)
+        # If this was the last reference in the entire process, close it.
+        released = _BACKENDS.release(spec)
+        if released is not None:
+            await released.aclose()
+
+    def _async_state_lock(self):
+        """Async-flavored RLock acquire. For the simple cases here, the sync
+        RLock is enough — we enter it synchronously, do a tiny bit of work,
+        then release. The real I/O happens outside."""
+        class _Ctx:
+            def __init__(self, lock: threading.RLock) -> None:
+                self._lock = lock
+            async def __aenter__(self) -> None:
+                self._lock.acquire()
+            async def __aexit__(self, *exc) -> None:
+                self._lock.release()
+        return _Ctx(self._state_lock)
+
+    def _run_sync(self, coro):
+        """Execute ``coro`` on the Manager's background event loop and wait
+        for the result. This is how sync methods reuse the async implementation.
+
+        Implementation detail: we lazy-start a single daemon thread running an
+        event loop for the lifetime of the Manager. All sync → async bridging
+        funnels through it, so sqlite connections attached to the loop remain
+        on one thread (a requirement for sqlite3 without check_same_thread).
+
+        Not safe to call from within a running event loop — use the ``a*``
+        method directly in that case. We detect and raise.
         """
-        Relational join across two registered stores.
+        try:
+            asyncio.get_running_loop()
+            raise RuntimeError(
+                "Manager sync methods can't be called from inside an async context; "
+                "use the a-prefixed async method instead."
+            )
+        except RuntimeError as exc:
+            if "can't be called" in str(exc):
+                raise
+            # get_running_loop raises RuntimeError when no loop is running — good, that's expected.
 
-        Parameters
-        ----------
-        left, right : store names (must be registered)
-        on          : join predicate — called as on(left_val, right_val)
-        how         : 'inner' | 'left' | 'right' | 'outer'
-        where       : optional filter applied only to matched pairs (both non-None);
-                      unmatched rows produced by left/right/outer are always included
+        if self._loop is None or not self._loop.is_running():
+            self._start_background_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
 
-        Returns
-        -------
-        list of (left_val, right_val) tuples. Unmatched sides are None.
+    def _start_background_loop(self) -> None:
+        """Start the dedicated event loop thread used by _run_sync."""
+        ready = threading.Event()
 
-        Complexity
-        ----------
-        O(m x n) — naive nested loop over store.list() on both sides.
-        DB-backed stores (SQLite, Postgres, SQLAlchemy, …) should override
-        with a delegated query rather than relying on this implementation.
-        """
-        if how not in VALID_JOIN_TYPES:
-            raise ValueError(f"Invalid how='{how}'. Expected one of: {sorted(VALID_JOIN_TYPES)}")
+        def _run() -> None:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            ready.set()
+            self._loop.run_forever()
 
-        left_vals = self._get_required(left).list()
-        right_vals = self._get_required(right).list()
-        return apply_join(left_vals, right_vals, on, how, where)
+        self._loop_thread = threading.Thread(target=_run, daemon=True, name='pm-loop')
+        self._loop_thread.start()
+        ready.wait()

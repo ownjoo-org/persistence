@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(xargs sed:*)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_async_in_memory.py test/unit/store/test_async_ndjson_file.py -v)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_async_ndjson_file.py -v)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/ -v)",
+      "Bash(.venv/Scripts/python -c \"import tinydb; print\\(tinydb.__version__\\)\")",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_sqlite.py test/unit/store/test_async_sqlite.py test/unit/store/test_tinydb_store.py -v)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_sqlite.py::TestSqliteStoreFile::test_persists_across_instances -v -s)",
+      "Bash(.venv/Scripts/python -c \"import sqlalchemy, redis, aiosqlite, fakeredis; print\\('sqlalchemy', sqlalchemy.__version__, '| redis', redis.__version__, '| aiosqlite', aiosqlite.__version__, '| fakeredis', fakeredis.__version__\\)\")",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_sqlalchemy_store.py test/unit/store/test_async_sqlalchemy_store.py test/unit/store/test_redis_store.py test/unit/store/test_async_redis_store.py)",
+      "Bash(.venv/Scripts/python -c \"import fakeredis; print\\(dir\\(fakeredis\\)\\)\")",
+      "Bash(.venv/Scripts/python -c \"from fakeredis import aioredis; print\\(dir\\(aioredis\\)\\)\")",
+      "Bash(.venv/Scripts/python -m pytest test/unit/ -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_versioned.py test/unit/store/test_async_versioned.py test/unit/store/test_list_by_field.py -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/store/test_list_by_field.py::TestAsyncSqlAlchemyListByField::test_returns_matching_records -v -s)",
+      "Bash(grep -rn \"^def \\\\|^@pytest.fixture\\\\|^async def \" /c/Users/eq_fu/Documents/work/PycharmProjects/persistence/test/unit/store/test_*.py)",
+      "Bash(find:*)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_upsert_guard.py -x -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_upsert_guard.py -v)",
+      "Bash(.venv/Scripts/python -m pytest --tb=short -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_store_groups.py -x -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_store_groups.py -v)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_relate.py -x -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_relate.py -v)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/test_async_persistence_manager.py -q)",
+      "Bash(.venv/Scripts/python -m pytest test/unit/links/test_persistence_link.py -v)",
+      "Bash(/c/Users/eq_fu/Documents/work/PycharmProjects/io_chains/.venv/Scripts/pip install:*)",
+      "Bash(/c/Users/eq_fu/Documents/work/PycharmProjects/io_chains/.venv/Scripts/python -m pytest /c/Users/eq_fu/Documents/work/PycharmProjects/io_chains/test/unit/links/test_persistence_link.py -v)",
+      "Bash(/c/Users/eq_fu/Documents/work/PycharmProjects/io_chains/.venv/Scripts/pytest.exe --version)",
+      "Bash(git restore:*)"
+    ]
+  }
+}

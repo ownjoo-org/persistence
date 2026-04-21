@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from .. import Manager, Sqlite
+from oj_persistence import Manager, Sqlite
 
 
 # ------------------------------------------------------------------ WAL verification

@@ -2,7 +2,7 @@
 
 import pytest
 
-from .. import manager as manager_module
+from oj_persistence import manager as manager_module
 
 
 @pytest.fixture(autouse=True)

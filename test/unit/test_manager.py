@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from .. import (
+from oj_persistence import (
     Capability,
     InMemory,
     Manager,
@@ -13,7 +13,7 @@ from .. import (
     TableNotRegistered,
     UnsupportedOperation,
 )
-from .. import manager as manager_module
+from oj_persistence import manager as manager_module
 
 
 # ------------------------------------------------------------------ sync API
