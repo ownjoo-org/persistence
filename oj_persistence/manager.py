@@ -199,8 +199,9 @@ class Manager:
     Test isolation
     --------------
     Unit tests that need a clean slate should call ``Manager._reset()`` in
-    their setUp / teardown. This closes all open backends and returns the
-    singleton to an empty state so the next ``Manager()`` starts fresh.
+    sync setUp / tearDown, or ``await Manager._areset()`` in async fixtures.
+    Both close all open backends and return the singleton to an empty state
+    so the next ``Manager()`` starts fresh.
     """
 
     _instance: 'Manager | None' = None
@@ -216,15 +217,30 @@ class Manager:
 
     @classmethod
     def _reset(cls) -> None:
-        """Close all backends and discard the singleton. For test use only."""
+        """Close all backends and discard the singleton. For test use only.
+
+        Must be called from a non-async context (sync setUp / tearDown).
+        Use ``await Manager._areset()`` from async test fixtures instead.
+        """
         with cls._singleton_lock:
             if cls._instance is not None:
                 try:
-                    # best-effort close; ignore errors during teardown
                     cls._instance._run_sync(cls._instance.aclose())
                 except Exception:
                     pass
             cls._instance = None
+
+    @classmethod
+    async def _areset(cls) -> None:
+        """Async version of _reset() for use inside async setUp / tearDown."""
+        with cls._singleton_lock:
+            instance = cls._instance
+            cls._instance = None
+        if instance is not None:
+            try:
+                await instance.aclose()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ init
 
