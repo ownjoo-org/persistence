@@ -77,6 +77,13 @@ class TinyDb(BackendSpec):
     path: str | Path
 
 
+@dataclass(frozen=True)
+class DynamoDB(BackendSpec):
+    region: str
+    prefix: str = ''
+    endpoint_url: str | None = None  # for DynamoDB Local in dev/test
+
+
 # ------------------------------------------------------------------ backend abstract
 
 class Backend(ABC):

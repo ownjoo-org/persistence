@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oj-persistence"
-version = "0.1.0"
+version = "0.2.0"
 description = "Thread-safe persistence management with pluggable storage backends"
 readme = "README.md"
 license = "MIT"
@@ -22,7 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["aiosqlite", "fakeredis[lua]", "oj-toolkit", "pytest"]
+dynamodb = ["boto3>=1.26"]
+dev = ["aiosqlite", "fakeredis[lua]", "moto[dynamodb]", "oj-toolkit", "pytest"]
 
 [project.urls]
 Repository = "https://github.com/ownjoo-org/persistence"

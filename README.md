@@ -14,7 +14,8 @@ SQLite and InMemory need no extra dependencies. Install drivers only for the
 backends you actually use:
 
 ```bash
-pip install "oj-persistence[dev]"    # pytest + aiosqlite + fakeredis
+pip install "oj-persistence[dynamodb]"   # boto3 — for the DynamoDB backend
+pip install "oj-persistence[dev]"        # pytest + aiosqlite + fakeredis + moto
 ```
 
 ## Quick start
@@ -134,6 +135,7 @@ class Capability(StrEnum):
 |------------|--------------|
 | `Sqlite`   | `PAGINATION`, `FIELD_INDEX`, `NATIVE_JOIN`, `NATIVE_UPSERT` |
 | `InMemory` | `PAGINATION`, `FIELD_INDEX`, `NATIVE_UPSERT` |
+| `DynamoDB` | `PAGINATION`, `NATIVE_UPSERT` |
 
 Declare what you need up-front and the Manager validates before you run:
 
@@ -174,6 +176,30 @@ across tables run concurrently, and joins push down into SQL (see
 Dict-backed, single-lock. Fastest; not persistent. Each `InMemory()` spec
 gets its own backend — two `InMemory()` calls never share state. Useful for
 tests and ephemeral caches.
+
+### `DynamoDB(region, prefix='', endpoint_url=None)`
+
+AWS DynamoDB with PAY_PER_REQUEST billing — no capacity planning required.
+Each logical table maps to one DynamoDB table named `{prefix}{table}`.
+
+```python
+from oj_persistence import Manager, DynamoDB
+
+pm = Manager()
+pm.register('sessions', DynamoDB(region='us-east-1', prefix='myapp_'))
+pm.upsert('sessions', 'sid:abc', {'user_id': 'u1', '_ttl': 1735689600})
+pm.read('sessions', 'sid:abc')
+pm.close()
+```
+
+**TTL**: if the value is a dict containing a `_ttl` key (Unix epoch as
+`float`/`int`), the backend stores it as DynamoDB's native TTL attribute.
+DynamoDB will automatically expire and delete the item after that timestamp.
+
+**Local testing**: pass `endpoint_url='http://localhost:8000'` to target
+DynamoDB Local or a `moto` mock server instead of AWS.
+
+**Install**: `pip install "oj-persistence[dynamodb]"` (adds `boto3`).
 
 ### Other specs
 
@@ -365,12 +391,15 @@ file extension (`.gz`, `.bz2`, `.xz`, `.lzma`).
 - Python >= 3.11
 - `sqlalchemy>=2.0`, `redis>=5.0`, `tinydb`, `ijson` — installed by default;
   needed only by the legacy store classes or by future backends.
+- `boto3>=1.26` — optional; required only for the `DynamoDB` backend
+  (`pip install "oj-persistence[dynamodb]"`).
 
 For testing without a live Redis server: `pip install "fakeredis[lua]"`.
+For testing the DynamoDB backend without AWS: `pip install moto[dynamodb]`.
 
 ## Version / stability
 
-Current: **v0.1.0**. This is the first release of the v2 API. Expect some
-churn as the remaining backends (`Ndjson`, `Redis`, `SqlAlchemy`, `TinyDb`)
-are ported to the new `Backend` interface. The Manager surface itself is
-considered stable.
+Current: **v0.2.0**. Added DynamoDB backend with native TTL support. The
+Manager surface is considered stable. Expect some churn as the remaining
+backends (`Ndjson`, `Redis`, `SqlAlchemy`, `TinyDb`) are ported to the new
+`Backend` interface.

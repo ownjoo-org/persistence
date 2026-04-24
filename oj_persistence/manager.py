@@ -29,6 +29,7 @@ from .base import (
     Backend,
     BackendSpec,
     Capability,
+    DynamoDB,
     InMemory,
     Ndjson,
     Redis,
@@ -121,6 +122,8 @@ def _dedup_key(spec: BackendSpec) -> tuple:
         return ('redis', spec.url, spec.db)
     if isinstance(spec, SqlAlchemy):
         return ('sqlalchemy', spec.url)
+    if isinstance(spec, DynamoDB):
+        return ('dynamodb', spec.region, spec.prefix, spec.endpoint_url)
     raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
 
 
@@ -133,6 +136,13 @@ def _construct_backend(spec: BackendSpec) -> Backend:
     if isinstance(spec, InMemory):
         from .backends.in_memory_backend import InMemoryBackend
         return InMemoryBackend()
+    if isinstance(spec, DynamoDB):
+        from .backends.dynamodb_backend import DynamoDbBackend
+        return DynamoDbBackend(
+            region=spec.region,
+            prefix=spec.prefix,
+            endpoint_url=spec.endpoint_url,
+        )
     if isinstance(spec, (Ndjson, Redis, SqlAlchemy, TinyDb)):
         raise NotImplementedError(
             f'{type(spec).__name__} backend not yet ported to v2. '
@@ -144,7 +154,7 @@ def _construct_backend(spec: BackendSpec) -> Backend:
 # into `base` for spec classes; the Manager re-exports them alongside itself.
 __all__ = [
     'Manager',
-    'Sqlite', 'InMemory', 'Ndjson', 'Redis', 'SqlAlchemy', 'TinyDb',
+    'DynamoDB', 'Sqlite', 'InMemory', 'Ndjson', 'Redis', 'SqlAlchemy', 'TinyDb',
     'Capability',
     'TableAlreadyRegistered', 'TableNotRegistered', 'UnsupportedOperation',
 ]
