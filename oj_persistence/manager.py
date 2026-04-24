@@ -177,37 +177,60 @@ __all__ = [
 
 
 class Manager:
-    """Owner of every backing resource it knows about.
+    """Process-scoped singleton that owns every backing resource.
+
+    ``Manager()`` always returns the same instance — all application code
+    shares one table registry and one set of backend connections. This prevents
+    two independent call sites from opening conflicting connections to the same
+    file or remote store.
 
     Typical use::
 
-        from oj_persistence import Manager, Sqlite, InMemory
+        from oj_persistence import Manager, Sqlite, DynamoDB
 
-        pm = Manager()
-        pm.register('users', Sqlite(path='data/app.db'))
-        pm.register('orders', Sqlite(path='data/app.db'))   # shares conn with users
-        pm.register('cache', InMemory())
+        # configure once at startup (idempotent — safe to call from multiple modules)
+        Manager().register('users',    Sqlite(path='data/app.db'))
+        Manager().register('sessions', DynamoDB(region='us-east-1'))
 
-        pm.create('users', 'u1', {'name': 'Alice'})
-        await pm.aread('users', 'u1')
+        # use anywhere — always the same instance
+        Manager().create('users', 'u1', {'name': 'Alice'})
+        await Manager().aread('sessions', 'sid:abc')
 
-        pm.close()   # or await pm.aclose()
-
-    Concurrency: see ./README.md. Short version: sqlite runs in WAL mode with
-    a reader pool and a single writer; reads never block writes; writes never
-    block reads; cross-table reads in the same file are concurrent.
-
-    Instance independence: construct multiple ``Manager()`` instances freely
-    (one per test, one per tenant, or whatever fits). Each has its own
-    table-name namespace. The file-level coordination is still enforced — the
-    process-scoped ``_BACKENDS`` registry ensures that two ``Sqlite(path=X)``
-    registrations (from the same Manager or different Managers) share exactly
-    one underlying ``SqliteBackend``.
+    Test isolation
+    --------------
+    Unit tests that need a clean slate should call ``Manager._reset()`` in
+    their setUp / teardown. This closes all open backends and returns the
+    singleton to an empty state so the next ``Manager()`` starts fresh.
     """
+
+    _instance: 'Manager | None' = None
+    _singleton_lock: threading.Lock = threading.Lock()
+
+    def __new__(cls) -> 'Manager':
+        with cls._singleton_lock:
+            if cls._instance is None:
+                inst = super().__new__(cls)
+                inst._singleton_initialized = False
+                cls._instance = inst
+            return cls._instance
+
+    @classmethod
+    def _reset(cls) -> None:
+        """Close all backends and discard the singleton. For test use only."""
+        with cls._singleton_lock:
+            if cls._instance is not None:
+                try:
+                    # best-effort close; ignore errors during teardown
+                    cls._instance._run_sync(cls._instance.aclose())
+                except Exception:
+                    pass
+            cls._instance = None
 
     # ------------------------------------------------------------------ init
 
     def __init__(self) -> None:
+        if getattr(self, '_singleton_initialized', False):
+            return
         # table name → backend instance that owns it (looked up from _BACKENDS)
         self._tables: dict[str, Backend] = {}
         # table name → spec used to register it (needed for release() on drop)
@@ -218,6 +241,7 @@ class Manager:
         # Background event loop for sync → async bridging. Started lazily.
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
+        self._singleton_initialized = True
 
     # ------------------------------------------------------------------ registration
 

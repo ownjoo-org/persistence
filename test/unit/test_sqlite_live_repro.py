@@ -36,10 +36,14 @@ from oj_persistence.backends.sqlite_backend import SqliteBackend
 class TestSqliteLiveRepro(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
+        from oj_persistence import Manager
+        Manager._reset()
         self._tmp = tempfile.mkdtemp()
         self.tmp_path = pathlib.Path(self._tmp)
 
     def tearDown(self):
+        from oj_persistence import Manager
+        Manager._reset()
         import shutil
         shutil.rmtree(self._tmp, ignore_errors=True)
 
