@@ -78,6 +78,16 @@ class TinyDb(BackendSpec):
 
 
 @dataclass(frozen=True)
+class Json(BackendSpec):
+    path: str | Path  # directory; each table → {path}/{table}.json
+
+
+@dataclass(frozen=True)
+class Csv(BackendSpec):
+    path: str | Path  # directory; each table → {path}/{table}.csv
+
+
+@dataclass(frozen=True)
 class DynamoDB(BackendSpec):
     region: str
     prefix: str = ''

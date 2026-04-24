@@ -29,8 +29,10 @@ from .base import (
     Backend,
     BackendSpec,
     Capability,
+    Csv,
     DynamoDB,
     InMemory,
+    Json,
     Ndjson,
     Redis,
     Sqlite,
@@ -40,7 +42,6 @@ from .base import (
     TinyDb,
     UnsupportedOperation,
 )
-
 
 # ------------------------------------------------------------------ backend registry
 #
@@ -116,6 +117,10 @@ def _dedup_key(spec: BackendSpec) -> tuple:
         return ('sqlite', str(spec.path))
     if isinstance(spec, Ndjson):
         return ('ndjson', str(spec.path))
+    if isinstance(spec, Json):
+        return ('json', str(spec.path))
+    if isinstance(spec, Csv):
+        return ('csv', str(spec.path))
     if isinstance(spec, TinyDb):
         return ('tinydb', str(spec.path))
     if isinstance(spec, Redis):
@@ -143,18 +148,29 @@ def _construct_backend(spec: BackendSpec) -> Backend:
             prefix=spec.prefix,
             endpoint_url=spec.endpoint_url,
         )
-    if isinstance(spec, (Ndjson, Redis, SqlAlchemy, TinyDb)):
-        raise NotImplementedError(
-            f'{type(spec).__name__} backend not yet ported to v2. '
-            f'Sqlite + InMemory ship first; others follow in a later pass.'
-        )
+    if isinstance(spec, Ndjson):
+        from .backends.ndjson_backend import NdjsonBackend
+        return NdjsonBackend(base_dir=spec.path)
+    if isinstance(spec, Json):
+        from .backends.json_backend import JsonBackend
+        return JsonBackend(base_dir=spec.path)
+    if isinstance(spec, Csv):
+        from .backends.csv_backend import CsvBackend
+        return CsvBackend(base_dir=spec.path)
+    if isinstance(spec, Redis):
+        from .backends.redis_backend import RedisBackend
+        return RedisBackend(url=spec.url, db=spec.db, prefix=spec.prefix)
+    if isinstance(spec, SqlAlchemy):
+        from .backends.sqlalchemy_backend import SqlAlchemyBackend
+        return SqlAlchemyBackend(url=spec.url)
+    if isinstance(spec, TinyDb):
+        from .backends.tinydb_backend import TinyDbBackend
+        return TinyDbBackend(path=spec.path)
     raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
 
-# Intentional: keep these import-visible here so callers don't have to reach
-# into `base` for spec classes; the Manager re-exports them alongside itself.
 __all__ = [
     'Manager',
-    'DynamoDB', 'Sqlite', 'InMemory', 'Ndjson', 'Redis', 'SqlAlchemy', 'TinyDb',
+    'Csv', 'DynamoDB', 'InMemory', 'Json', 'Ndjson', 'Redis', 'Sqlite', 'SqlAlchemy', 'TinyDb',
     'Capability',
     'TableAlreadyRegistered', 'TableNotRegistered', 'UnsupportedOperation',
 ]

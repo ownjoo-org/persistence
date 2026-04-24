@@ -131,11 +131,17 @@ class Capability(StrEnum):
     NATIVE_UPSERT = 'native_upsert'  # in-place upsert without file rewrite
 ```
 
-| Backend    | Capabilities |
-|------------|--------------|
-| `Sqlite`   | `PAGINATION`, `FIELD_INDEX`, `NATIVE_JOIN`, `NATIVE_UPSERT` |
-| `InMemory` | `PAGINATION`, `FIELD_INDEX`, `NATIVE_UPSERT` |
-| `DynamoDB` | `PAGINATION`, `NATIVE_UPSERT` |
+| Backend     | Capabilities |
+|-------------|--------------|
+| `Sqlite`    | `PAGINATION`, `FIELD_INDEX`, `NATIVE_JOIN`, `NATIVE_UPSERT` |
+| `InMemory`  | `PAGINATION`, `FIELD_INDEX`, `NATIVE_UPSERT` |
+| `Json`      | `PAGINATION` |
+| `Ndjson`    | `PAGINATION` |
+| `Csv`       | `PAGINATION` |
+| `TinyDb`    | `PAGINATION`, `NATIVE_UPSERT` |
+| `Redis`     | `PAGINATION`, `NATIVE_UPSERT` |
+| `SqlAlchemy`| `PAGINATION`, `NATIVE_UPSERT` |
+| `DynamoDB`  | `PAGINATION`, `NATIVE_UPSERT` |
 
 Declare what you need up-front and the Manager validates before you run:
 
@@ -177,6 +183,42 @@ Dict-backed, single-lock. Fastest; not persistent. Each `InMemory()` spec
 gets its own backend — two `InMemory()` calls never share state. Useful for
 tests and ephemeral caches.
 
+### `Json(path)`
+
+A directory of JSON files — each table maps to ``{path}/{table}.json``. The
+file is a plain JSON object ``{"key": value, ...}``, loaded fully into memory
+on each operation and rewritten atomically on mutations. Best for small tables
+where human-readability matters.
+
+```python
+pm.register('config', Json(path='data/'))
+pm.upsert('config', 'app', {'debug': True, 'port': 8080})
+```
+
+### `Ndjson(path)`
+
+A directory of NDJSON files — each table maps to ``{path}/{table}.ndjson``.
+Each record is a JSON line. Mutations rewrite the file under a per-table lock.
+Good for append-friendly workloads and log-style data.
+
+```python
+pm.register('events', Ndjson(path='data/'))
+pm.create('events', 'ev1', {'type': 'click', 'user': 'u1'})
+```
+
+### `Csv(path)`
+
+A directory of CSV files — each table maps to ``{path}/{table}.csv``. The
+first column is always ``key``; remaining columns are the fields of the value
+dict. Column names are inferred from the first write. Values are always
+``dict[str, str]`` on read (CSV stores strings).
+
+```python
+pm.register('users', Csv(path='data/'))
+pm.upsert('users', 'u1', {'name': 'Alice', 'role': 'admin'})
+row = pm.read('users', 'u1')  # {'name': 'Alice', 'role': 'admin'}
+```
+
 ### `DynamoDB(region, prefix='', endpoint_url=None)`
 
 AWS DynamoDB with PAY_PER_REQUEST billing — no capacity planning required.
@@ -201,11 +243,36 @@ DynamoDB Local or a `moto` mock server instead of AWS.
 
 **Install**: `pip install "oj-persistence[dynamodb]"` (adds `boto3`).
 
-### Other specs
+### `Redis(url, db=0, prefix='')`
 
-`Ndjson`, `Redis`, `SqlAlchemy`, and `TinyDb` spec classes are exported and
-are targets for future backend work. Registering one today raises
-`NotImplementedError` — they ship in a later pass.
+String keys with optional per-key TTL. Key scheme: ``{prefix}{table}:{key}``.
+Requires ``pip install "oj-persistence[redis]"``.
+
+```python
+pm.register('sessions', Redis(url='redis://localhost:6379', prefix='myapp_'))
+pm.upsert('sessions', 'sid:abc', {'user': 'u1', '_ttl': 1735689600})
+```
+
+### `SqlAlchemy(url)`
+
+Any SQLAlchemy-supported SQL database (PostgreSQL, MySQL, Oracle, etc.).
+Each table maps to a SQL table with ``pk TEXT PRIMARY KEY, value TEXT``.
+Requires ``pip install "oj-persistence[sqlalchemy]"`` plus the appropriate
+database driver.
+
+```python
+pm.register('users', SqlAlchemy(url='postgresql://user:pass@host/db'))
+```
+
+### `TinyDb(path)`
+
+Pure-Python JSON database. Each backend instance owns one TinyDB file; logical
+tables are TinyDB tables within it. Good for small embedded use cases with no
+external dependencies. Requires ``pip install "oj-persistence[tinydb]"``.
+
+```python
+pm.register('cache', TinyDb(path='data/cache.db'))
+```
 
 ---
 
@@ -399,7 +466,6 @@ For testing the DynamoDB backend without AWS: `pip install moto[dynamodb]`.
 
 ## Version / stability
 
-Current: **v0.2.0**. Added DynamoDB backend with native TTL support. The
-Manager surface is considered stable. Expect some churn as the remaining
-backends (`Ndjson`, `Redis`, `SqlAlchemy`, `TinyDb`) are ported to the new
-`Backend` interface.
+Current: **v0.3.0**. All backends fully implemented: `Sqlite`, `InMemory`,
+`Json`, `Ndjson`, `Csv`, `Redis`, `SqlAlchemy`, `TinyDb`, `DynamoDB`. The
+legacy `store/` layer has been removed. The Manager surface is stable.
