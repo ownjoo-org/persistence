@@ -35,6 +35,7 @@ from .base import (
     Json,
     Ndjson,
     Redis,
+    S3,
     Sqlite,
     SqlAlchemy,
     TableAlreadyRegistered,
@@ -129,6 +130,8 @@ def _dedup_key(spec: BackendSpec) -> tuple:
         return ('sqlalchemy', spec.url)
     if isinstance(spec, DynamoDB):
         return ('dynamodb', spec.region, spec.prefix, spec.endpoint_url)
+    if isinstance(spec, S3):
+        return ('s3', spec.bucket, spec.prefix, spec.region)
     raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
 
 
@@ -166,11 +169,14 @@ def _construct_backend(spec: BackendSpec) -> Backend:
     if isinstance(spec, TinyDb):
         from .backends.tinydb_backend import TinyDbBackend
         return TinyDbBackend(path=spec.path)
+    if isinstance(spec, S3):
+        from .backends.s3_backend import S3Backend
+        return S3Backend(bucket=spec.bucket, prefix=spec.prefix, region=spec.region)
     raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
 
 __all__ = [
     'Manager',
-    'Csv', 'DynamoDB', 'InMemory', 'Json', 'Ndjson', 'Redis', 'Sqlite', 'SqlAlchemy', 'TinyDb',
+    'Csv', 'DynamoDB', 'InMemory', 'Json', 'Ndjson', 'Redis', 'S3', 'Sqlite', 'SqlAlchemy', 'TinyDb',
     'Capability',
     'TableAlreadyRegistered', 'TableNotRegistered', 'UnsupportedOperation',
 ]

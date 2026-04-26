@@ -94,6 +94,13 @@ class DynamoDB(BackendSpec):
     endpoint_url: str | None = None  # for DynamoDB Local in dev/test
 
 
+@dataclass(frozen=True)
+class S3(BackendSpec):
+    bucket: str
+    prefix: str = ''
+    region: str = 'us-east-1'
+
+
 # ------------------------------------------------------------------ backend abstract
 
 class Backend(ABC):
