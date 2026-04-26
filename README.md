@@ -15,6 +15,7 @@ backends you actually use:
 
 ```bash
 pip install "oj-persistence[dynamodb]"   # boto3 — for the DynamoDB backend
+pip install "oj-persistence[s3]"         # boto3 — for the S3 backend
 pip install "oj-persistence[dev]"        # pytest + aiosqlite + fakeredis + moto
 ```
 
@@ -142,6 +143,7 @@ class Capability(StrEnum):
 | `Redis`     | `PAGINATION`, `NATIVE_UPSERT` |
 | `SqlAlchemy`| `PAGINATION`, `NATIVE_UPSERT` |
 | `DynamoDB`  | `PAGINATION`, `NATIVE_UPSERT` |
+| `S3`        | `PAGINATION` |
 
 Declare what you need up-front and the Manager validates before you run:
 
@@ -242,6 +244,30 @@ DynamoDB will automatically expire and delete the item after that timestamp.
 DynamoDB Local or a `moto` mock server instead of AWS.
 
 **Install**: `pip install "oj-persistence[dynamodb]"` (adds `boto3`).
+
+### `S3(bucket, prefix='', region='us-east-1')`
+
+AWS S3 with NDJSON storage — each logical table maps to one S3 object at
+`{prefix}{table}.ndjson`. Records are stored as newline-delimited JSON.
+Reads are cached in-memory for the backend's lifetime; every mutating call
+re-serializes the table and does a `PutObject`, so data is durable after
+each write.
+
+Suited for small-to-medium pipeline result sets (hundreds of records) where
+S3 is preferred over DynamoDB for cost or portability reasons.
+
+```python
+from oj_persistence import Manager, S3
+
+pm = Manager()
+pm.register('results', S3(bucket='my-pipeline-results', prefix='runs/'))
+await pm.aupsert('results', 'repo-1', {'name': 'my-repo', 'commits': [...]})
+rows = await pm.alist_page('results', 0, 100)
+```
+
+**Install**: `pip install "oj-persistence[s3]"` (adds `boto3`).
+
+**Capabilities**: `PAGINATION`.
 
 ### `Redis(url, db=0, prefix='')`
 
