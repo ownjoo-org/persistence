@@ -245,7 +245,7 @@ DynamoDB Local or a `moto` mock server instead of AWS.
 
 **Install**: `pip install "oj-persistence[dynamodb]"` (adds `boto3`).
 
-### `S3(bucket, prefix='', region='us-east-1')`
+### `S3(bucket, prefix='', region='us-east-1', aws_access_key_id=None, aws_secret_access_key=None)`
 
 AWS S3 with NDJSON storage — each logical table maps to one S3 object at
 `{prefix}{table}.ndjson`. Records are stored as newline-delimited JSON.
@@ -260,10 +260,27 @@ S3 is preferred over DynamoDB for cost or portability reasons.
 from oj_persistence import Manager, S3
 
 pm = Manager()
+
+# Ambient credentials (IAM role, env vars, ~/.aws/credentials)
 pm.register('results', S3(bucket='my-pipeline-results', prefix='runs/'))
+
+# Explicit credentials (multi-tenant / bring-your-own-bucket)
+pm.register('results', S3(
+    bucket='customer-bucket',
+    prefix='pipeline-results/',
+    region='us-west-2',
+    aws_access_key_id='AKIA...',
+    aws_secret_access_key='...',
+))
+
 await pm.aupsert('results', 'repo-1', {'name': 'my-repo', 'commits': [...]})
 rows = await pm.alist_page('results', 0, 100)
 ```
+
+When `aws_access_key_id` and `aws_secret_access_key` are provided the backend
+passes them directly to `boto3.client()`, bypassing the default credential
+chain. This lets multi-tenant callers bring their own bucket without needing
+cross-account IAM roles.
 
 **Install**: `pip install "oj-persistence[s3]"` (adds `boto3`).
 
@@ -492,6 +509,6 @@ For testing the DynamoDB backend without AWS: `pip install moto[dynamodb]`.
 
 ## Version / stability
 
-Current: **v0.3.0**. All backends fully implemented: `Sqlite`, `InMemory`,
-`Json`, `Ndjson`, `Csv`, `Redis`, `SqlAlchemy`, `TinyDb`, `DynamoDB`. The
-legacy `store/` layer has been removed. The Manager surface is stable.
+Current: **v0.1.4**. All backends fully implemented: `Sqlite`, `InMemory`,
+`Json`, `Ndjson`, `Csv`, `Redis`, `SqlAlchemy`, `TinyDb`, `DynamoDB`, `S3`.
+The Manager surface is stable.

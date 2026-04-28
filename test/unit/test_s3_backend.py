@@ -116,3 +116,45 @@ class TestS3BackendBasics(unittest.IsolatedAsyncioTestCase):
         await pm.aupsert('repos', '2', {'id': 2, 'name': 'repo-b'})
         results = await pm.alist_page('repos', 0, 10)
         self.assertEqual(len(results), 2)
+
+    async def test_explicit_credentials_accepted(self):
+        """S3Backend works when explicit credentials are provided (moto intercepts them)."""
+        from oj_persistence.backends.s3_backend import S3Backend
+        backend = S3Backend(
+            bucket=BUCKET,
+            prefix='creds/',
+            region=REGION,
+            aws_access_key_id='explicit-key',
+            aws_secret_access_key='explicit-secret',
+        )
+        await backend.aopen()
+        await backend.acreate_table('things')
+        await backend.aupsert('things', 'k1', {'val': 42})
+        result = await backend.aread('things', 'k1')
+        self.assertEqual(result, {'val': 42})
+
+    async def test_s3_spec_credential_fields(self):
+        """S3 dataclass exposes credential fields and they flow through Manager."""
+        from oj_persistence import Manager, S3
+        spec = S3(
+            bucket=BUCKET,
+            prefix='creds-mgr/',
+            region=REGION,
+            aws_access_key_id='ak',
+            aws_secret_access_key='sk',
+        )
+        self.assertEqual(spec.aws_access_key_id, 'ak')
+        self.assertEqual(spec.aws_secret_access_key, 'sk')
+
+        pm = Manager()
+        await pm.aregister('items', spec)
+        await pm.aupsert('items', 'x', {'n': 1})
+        results = await pm.alist_page('items', 0, 10)
+        self.assertEqual(len(results), 1)
+
+    async def test_no_credentials_uses_ambient(self):
+        """S3 spec with no credentials defaults to None (ambient IAM/env)."""
+        from oj_persistence import S3
+        spec = S3(bucket=BUCKET, region=REGION)
+        self.assertIsNone(spec.aws_access_key_id)
+        self.assertIsNone(spec.aws_secret_access_key)
