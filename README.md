@@ -221,7 +221,7 @@ pm.upsert('users', 'u1', {'name': 'Alice', 'role': 'admin'})
 row = pm.read('users', 'u1')  # {'name': 'Alice', 'role': 'admin'}
 ```
 
-### `DynamoDB(region, prefix='', endpoint_url=None)`
+### `DynamoDB(region, prefix='', endpoint_url=None, aws_access_key_id=None, aws_secret_access_key=None)`
 
 AWS DynamoDB with PAY_PER_REQUEST billing — no capacity planning required.
 Each logical table maps to one DynamoDB table named `{prefix}{table}`.
@@ -230,7 +230,18 @@ Each logical table maps to one DynamoDB table named `{prefix}{table}`.
 from oj_persistence import Manager, DynamoDB
 
 pm = Manager()
+
+# Ambient credentials (IAM role, env vars, ~/.aws/credentials)
 pm.register('sessions', DynamoDB(region='us-east-1', prefix='myapp_'))
+
+# Explicit credentials (multi-tenant / bring-your-own-table)
+pm.register('sessions', DynamoDB(
+    region='us-west-2',
+    prefix='customer_',
+    aws_access_key_id='AKIA...',
+    aws_secret_access_key='...',
+))
+
 pm.upsert('sessions', 'sid:abc', {'user_id': 'u1', '_ttl': 1735689600})
 pm.read('sessions', 'sid:abc')
 pm.close()
@@ -242,6 +253,11 @@ DynamoDB will automatically expire and delete the item after that timestamp.
 
 **Local testing**: pass `endpoint_url='http://localhost:8000'` to target
 DynamoDB Local or a `moto` mock server instead of AWS.
+
+When `aws_access_key_id` and `aws_secret_access_key` are provided the backend
+passes them directly to `boto3.client()`, bypassing the default credential
+chain. This lets multi-tenant callers bring their own DynamoDB tables without
+needing cross-account IAM roles.
 
 **Install**: `pip install "oj-persistence[dynamodb]"` (adds `boto3`).
 
@@ -509,6 +525,6 @@ For testing the DynamoDB backend without AWS: `pip install moto[dynamodb]`.
 
 ## Version / stability
 
-Current: **v0.1.4**. All backends fully implemented: `Sqlite`, `InMemory`,
+Current: **v0.1.5**. All backends fully implemented: `Sqlite`, `InMemory`,
 `Json`, `Ndjson`, `Csv`, `Redis`, `SqlAlchemy`, `TinyDb`, `DynamoDB`, `S3`.
 The Manager surface is stable.

@@ -44,10 +44,14 @@ class DynamoDbBackend(Backend):
         region: str,
         prefix: str = '',
         endpoint_url: str | None = None,
+        aws_access_key_id: str | None = None,
+        aws_secret_access_key: str | None = None,
     ) -> None:
         self._region = region
         self._prefix = prefix
         self._endpoint_url = endpoint_url
+        self._aws_access_key_id = aws_access_key_id
+        self._aws_secret_access_key = aws_secret_access_key
         self._client = None
 
     # ------------------------------------------------------------------ lifecycle
@@ -60,6 +64,10 @@ class DynamoDbBackend(Backend):
         kwargs: dict[str, Any] = {'region_name': self._region}
         if self._endpoint_url:
             kwargs['endpoint_url'] = self._endpoint_url
+        if self._aws_access_key_id:
+            kwargs['aws_access_key_id'] = self._aws_access_key_id
+        if self._aws_secret_access_key:
+            kwargs['aws_secret_access_key'] = self._aws_secret_access_key
         self._client = boto3.client('dynamodb', **kwargs)
 
     async def aclose(self) -> None:

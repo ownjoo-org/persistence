@@ -92,6 +92,8 @@ class DynamoDB(BackendSpec):
     region: str
     prefix: str = ''
     endpoint_url: str | None = None  # for DynamoDB Local in dev/test
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
 
 
 @dataclass(frozen=True)

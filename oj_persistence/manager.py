@@ -129,7 +129,7 @@ def _dedup_key(spec: BackendSpec) -> tuple:
     if isinstance(spec, SqlAlchemy):
         return ('sqlalchemy', spec.url)
     if isinstance(spec, DynamoDB):
-        return ('dynamodb', spec.region, spec.prefix, spec.endpoint_url)
+        return ('dynamodb', spec.region, spec.prefix, spec.endpoint_url, spec.aws_access_key_id)
     if isinstance(spec, S3):
         return ('s3', spec.bucket, spec.prefix, spec.region)
     raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
@@ -150,6 +150,8 @@ def _construct_backend(spec: BackendSpec) -> Backend:
             region=spec.region,
             prefix=spec.prefix,
             endpoint_url=spec.endpoint_url,
+            aws_access_key_id=spec.aws_access_key_id,
+            aws_secret_access_key=spec.aws_secret_access_key,
         )
     if isinstance(spec, Ndjson):
         from .backends.ndjson_backend import NdjsonBackend
