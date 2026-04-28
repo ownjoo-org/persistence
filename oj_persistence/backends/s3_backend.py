@@ -29,17 +29,31 @@ from ..base import Backend, Capability
 class S3Backend(Backend):
     capabilities = frozenset({Capability.PAGINATION})
 
-    def __init__(self, bucket: str, prefix: str = '', region: str = 'us-east-1') -> None:
+    def __init__(
+        self,
+        bucket: str,
+        prefix: str = '',
+        region: str = 'us-east-1',
+        aws_access_key_id: str | None = None,
+        aws_secret_access_key: str | None = None,
+    ) -> None:
         self._bucket = bucket
         self._prefix = prefix.rstrip('/') + '/' if prefix else ''
         self._region = region
+        self._aws_access_key_id = aws_access_key_id
+        self._aws_secret_access_key = aws_secret_access_key
         self._client = None
         self._data: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def _get_client(self):
         if self._client is None:
-            self._client = boto3.client('s3', region_name=self._region)
+            kwargs: dict = {'region_name': self._region}
+            if self._aws_access_key_id:
+                kwargs['aws_access_key_id'] = self._aws_access_key_id
+            if self._aws_secret_access_key:
+                kwargs['aws_secret_access_key'] = self._aws_secret_access_key
+            self._client = boto3.client('s3', **kwargs)
         return self._client
 
     def _key(self, table: str) -> str:

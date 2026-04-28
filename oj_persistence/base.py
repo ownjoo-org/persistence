@@ -99,6 +99,8 @@ class S3(BackendSpec):
     bucket: str
     prefix: str = ''
     region: str = 'us-east-1'
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
 
 
 # ------------------------------------------------------------------ backend abstract

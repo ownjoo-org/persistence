@@ -171,7 +171,13 @@ def _construct_backend(spec: BackendSpec) -> Backend:
         return TinyDbBackend(path=spec.path)
     if isinstance(spec, S3):
         from .backends.s3_backend import S3Backend
-        return S3Backend(bucket=spec.bucket, prefix=spec.prefix, region=spec.region)
+        return S3Backend(
+            bucket=spec.bucket,
+            prefix=spec.prefix,
+            region=spec.region,
+            aws_access_key_id=spec.aws_access_key_id,
+            aws_secret_access_key=spec.aws_secret_access_key,
+        )
     raise TypeError(f'unknown BackendSpec: {type(spec).__name__}')
 
 __all__ = [
