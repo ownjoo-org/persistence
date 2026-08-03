@@ -1,5 +1,7 @@
 # oj-persistence
 
+[![License](https://img.shields.io/github/license/ownjoo/persistence)](LICENSE)
+
 Thread-safe, async-first persistence with a **single gatekeeper** (`Manager`) in
 front of pluggable backends. Consumers register tables by name + spec; they
 never see a store, connection, handle, or file descriptor.
