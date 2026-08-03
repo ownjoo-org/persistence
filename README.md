@@ -1,6 +1,7 @@
 # oj-persistence
 
 [![License](https://img.shields.io/github/license/ownjoo/persistence)](LICENSE)
+[![Top language](https://img.shields.io/github/languages/top/ownjoo/persistence)](https://github.com/ownjoo/persistence) [![Stars](https://img.shields.io/github/stars/ownjoo/persistence)](https://github.com/ownjoo/persistence/stargazers) [![Forks](https://img.shields.io/github/forks/ownjoo/persistence)](https://github.com/ownjoo/persistence/forks) [![Issues](https://img.shields.io/github/issues/ownjoo/persistence)](https://github.com/ownjoo/persistence/issues) [![Pull requests](https://img.shields.io/github/issues-pr/ownjoo/persistence)](https://github.com/ownjoo/persistence/pulls)
 
 Thread-safe, async-first persistence with a **single gatekeeper** (`Manager`) in
 front of pluggable backends. Consumers register tables by name + spec; they
